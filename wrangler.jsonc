@@ -14,7 +14,13 @@
 		// TEAM_DOMAIN may be the base Access URL or the full /cdn-cgi/access/certs URL.
 		// The worker now fails closed outside local development if Access is not configured.
 		"DOMAINS": "example.com",
-		"EMAIL_ADDRESSES": []
+		"EMAIL_ADDRESSES": [],
+		// Optional: run the email agent on an Ollama Cloud model instead of
+		// Workers AI. Set the OLLAMA_API_KEY secret to enable. The model and
+		// base URL can be overridden here (defaults: glm-5.2:cloud,
+		// https://ollama.com/v1).
+		"OLLAMA_MODEL": "glm-5.2:cloud",
+		"OLLAMA_BASE_URL": "https://ollama.com/v1"
 	},
 	"send_email": [
 		{

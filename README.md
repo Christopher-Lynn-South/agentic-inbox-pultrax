@@ -47,7 +47,7 @@ https://github.com/cloudflare/agentic-inbox/issues/4#issuecomment-4269118513
 
 - **Frontend:** React 19, React Router v7, Tailwind CSS, Zustand, TipTap, `@cloudflare/kumo`
 - **Backend:** Hono, Cloudflare Workers, Durable Objects (SQLite), R2, Email Routing
-- **AI Agent:** Cloudflare Agents SDK (`AIChatAgent`), AI SDK v6, Workers AI (`@cf/moonshotai/kimi-k2.5`), `react-markdown` + `remark-gfm`
+- **AI Agent:** Cloudflare Agents SDK (`AIChatAgent`), AI SDK v6, Workers AI (`@cf/moonshotai/kimi-k2.5`) or Ollama Cloud (`glm-5.2:cloud`), `react-markdown` + `remark-gfm`
 - **Auth:** Cloudflare Access JWT validation (required outside local development)
 
 ## Getting Started
@@ -61,6 +61,17 @@ npm run dev
 
 1. Set your domain in `wrangler.jsonc`
 2. Create an R2 bucket named `agentic-inbox`: `wrangler r2 bucket create agentic-inbox`
+
+#### Using an Ollama Cloud model (optional)
+
+By default the email agent runs on Cloudflare Workers AI. To run it on an
+[Ollama Cloud](https://ollama.com/cloud) model such as `glm-5.2:cloud` instead,
+set the `OLLAMA_API_KEY` secret (`wrangler secret put OLLAMA_API_KEY`, or add it
+to `.dev.vars` for local dev). The agent connects through Ollama's
+OpenAI-compatible API. The model and endpoint default to `glm-5.2:cloud` and
+`https://ollama.com/v1`; override them with the `OLLAMA_MODEL` and
+`OLLAMA_BASE_URL` vars in `wrangler.jsonc`. When `OLLAMA_API_KEY` is unset, the
+agent falls back to Workers AI automatically.
 
 ### Deploy
 

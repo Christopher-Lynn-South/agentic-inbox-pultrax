@@ -1,3 +1,10 @@
 # Cloudflare Access (required in production). TEAM_DOMAIN may be the base Access URL or the full /cdn-cgi/access/certs URL.
 POLICY_AUD=your-access-policy-audience-tag
 TEAM_DOMAIN=https://your-team.cloudflareaccess.com
+
+# Ollama Cloud (optional). Set OLLAMA_API_KEY to run the email agent on an
+# Ollama Cloud model instead of Cloudflare Workers AI. Get a key at
+# https://ollama.com/settings/keys
+# OLLAMA_API_KEY=your-ollama-cloud-api-key
+# OLLAMA_BASE_URL=https://ollama.com/v1
+# OLLAMA_MODEL=glm-5.2:cloud
