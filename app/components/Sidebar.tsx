@@ -4,7 +4,9 @@
 
 import { Badge, Button, Dialog, Input, Tooltip } from "@cloudflare/kumo";
 import {
+	AlarmIcon,
 	ArchiveIcon,
+	CalendarBlankIcon,
 	CaretLeftIcon,
 	FileIcon,
 	FolderIcon,
@@ -23,7 +25,9 @@ import { useUIStore } from "~/hooks/useUIStore";
 
 const FOLDER_ICONS: Record<string, React.ReactNode> = {
 	[Folders.INBOX]: <TrayIcon size={18} weight="regular" />,
+	[Folders.SNOOZED]: <AlarmIcon size={18} weight="regular" />,
 	[Folders.SENT]: <PaperPlaneTiltIcon size={18} weight="regular" />,
+	[Folders.SCHEDULED]: <CalendarBlankIcon size={18} weight="regular" />,
 	[Folders.DRAFT]: <FileIcon size={18} weight="regular" />,
 	[Folders.ARCHIVE]: <ArchiveIcon size={18} weight="regular" />,
 	[Folders.TRASH]: <TrashIcon size={18} weight="regular" />,
@@ -31,7 +35,9 @@ const FOLDER_ICONS: Record<string, React.ReactNode> = {
 
 const SYSTEM_FOLDER_LINKS = [
 	{ id: Folders.INBOX, label: "Inbox" },
+	{ id: Folders.SNOOZED, label: "Snoozed" },
 	{ id: Folders.SENT, label: "Sent" },
+	{ id: Folders.SCHEDULED, label: "Scheduled" },
 	{ id: Folders.DRAFT, label: "Drafts" },
 	{ id: Folders.ARCHIVE, label: "Archive" },
 	{ id: Folders.TRASH, label: "Trash" },

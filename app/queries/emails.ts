@@ -229,6 +229,37 @@ export function useMoveEmail() {
 	});
 }
 
+export function useSnoozeEmail() {
+	const invalidate = useInvalidateEmailData();
+	return useMutation({
+		mutationFn: ({
+			mailboxId,
+			id,
+			until,
+		}: { mailboxId: string; id: string; until: string }) =>
+			api.snoozeEmail(mailboxId, id, until),
+		onSuccess: (_data, { mailboxId }) => invalidate(mailboxId),
+	});
+}
+
+export function useUnsnoozeEmail() {
+	const invalidate = useInvalidateEmailData();
+	return useMutation({
+		mutationFn: ({ mailboxId, id }: { mailboxId: string; id: string }) =>
+			api.unsnoozeEmail(mailboxId, id),
+		onSuccess: (_data, { mailboxId }) => invalidate(mailboxId),
+	});
+}
+
+export function useCancelScheduledSend() {
+	const invalidate = useInvalidateEmailData();
+	return useMutation({
+		mutationFn: ({ mailboxId, id }: { mailboxId: string; id: string }) =>
+			api.cancelScheduledSend(mailboxId, id),
+		onSuccess: (_data, { mailboxId }) => invalidate(mailboxId),
+	});
+}
+
 export function useSaveDraft() {
 	const invalidate = useInvalidateEmailData();
 	return useMutation({

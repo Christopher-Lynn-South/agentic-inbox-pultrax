@@ -38,8 +38,13 @@ https://github.com/cloudflare/agentic-inbox/issues/4#issuecomment-4269118513
 ## Features
 
 - **Full email client** — Send and receive emails via Cloudflare Email Routing with a rich text composer, reply/forward threading, folder organization, search, and attachments
+- **Snooze** — Snooze emails until later today, tomorrow, next week, or a custom time; a Durable Object alarm returns them to the inbox (marked unread) when due
+- **Scheduled send** — Compose now, deliver later: pick a preset or custom time and the mailbox alarm sends the email on schedule; cancel any time from the Scheduled folder
+- **Email templates** — Save canned responses per mailbox and insert them from the composer; the AI agent can use them too when drafting replies
+- **Inbox rules** — Automatically move, star, mark read, trash, or mark spam incoming email based on sender, subject, or body matches (rules that file an email away also skip the auto-draft agent)
+- **Contacts autocomplete** — Recipient suggestions in the composer, built from your most frequent correspondents
 - **Per-mailbox isolation** — Each mailbox runs in its own Durable Object with SQLite storage and R2 for attachments
-- **Built-in AI agent** — Side panel with 9 email tools for reading, searching, drafting, and sending
+- **Built-in AI agent** — Side panel with 11 email tools for reading, searching, drafting, snoozing, and using templates
 - **Auto-draft on new email** — Agent automatically reads inbound emails and generates draft replies, always requiring explicit confirmation before sending
 - **Configurable and persistent** — Custom system prompts per mailbox, persistent chat history, streaming markdown responses, and tool call visibility
 

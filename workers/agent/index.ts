@@ -28,6 +28,8 @@ import {
 	toolMarkEmailRead,
 	toolMoveEmail,
 	toolDiscardDraft,
+	toolSnoozeEmail,
+	toolListTemplates,
 } from "../lib/tools";
 import { Folders, FOLDER_TOOL_DESCRIPTION, MOVE_FOLDER_TOOL_DESCRIPTION } from "../../shared/folders";
 import type { Env } from "../types";
@@ -264,6 +266,31 @@ function createEmailTools(env: Env, mailboxId: string) {
 			}),
 			execute: async ({ draftId }): Promise<unknown> => {
 				return toolDiscardDraft(env, mailboxId, draftId);
+			},
+		}),
+
+		snooze_email: defineTool({
+			description:
+				"Snooze an email until a future time. The email moves to the Snoozed folder and automatically returns to the inbox (marked unread) at the given time. Use this when the operator wants to deal with an email later.",
+			parameters: z.object({
+				emailId: z.string().describe("The email ID to snooze"),
+				until: z
+					.string()
+					.describe(
+						"ISO 8601 timestamp for when the email should return to the inbox (e.g. 2026-07-21T08:00:00Z). Must be in the future.",
+					),
+			}),
+			execute: async ({ emailId, until }): Promise<unknown> => {
+				return toolSnoozeEmail(env, mailboxId, emailId, until);
+			},
+		}),
+
+		list_templates: defineTool({
+			description:
+				"List the mailbox's saved email templates (canned responses). Each template has a name, optional subject, and body. Use a template's body as the starting point when the operator asks you to reply using a template, adapting names and details to the conversation.",
+			parameters: z.object({}),
+			execute: async (): Promise<unknown> => {
+				return toolListTemplates(env, mailboxId);
 			},
 		}),
 	};

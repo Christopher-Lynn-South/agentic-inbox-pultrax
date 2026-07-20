@@ -9,6 +9,7 @@ import type { SQL } from "drizzle-orm";
 import * as schema from "../db/schema";
 import { Folders } from "../../shared/folders";
 import type { Env } from "../types";
+import { sendEmail } from "../email-sender";
 import { applyMigrations, mailboxMigrations } from "./migrations";
 
 /**
@@ -87,6 +88,26 @@ interface EmailData {
 	thread_id?: string | null;
 	message_id?: string | null;
 	raw_headers?: string | null;
+	snoozed_until?: string | null;
+	return_folder?: string | null;
+	send_at?: string | null;
+}
+
+export interface TemplateData {
+	id: string;
+	name: string;
+	subject?: string | null;
+	body: string;
+}
+
+export interface RuleData {
+	id: string;
+	name: string;
+	match_field: "sender" | "subject" | "body";
+	match_value: string;
+	action: "move" | "star" | "mark_read" | "trash" | "spam";
+	action_folder_id?: string | null;
+	enabled: boolean;
 }
 
 interface AttachmentData {
@@ -160,6 +181,8 @@ export class MailboxDO extends DurableObject<Env> {
 				email_references: schema.emails.email_references,
 				thread_id: schema.emails.thread_id,
 				folder_id: schema.emails.folder_id,
+				snoozed_until: schema.emails.snoozed_until,
+				send_at: schema.emails.send_at,
 				snippet: sql<string>`SUBSTR(${schema.emails.body}, 1, 300)`,
 			})
 			.from(schema.emails)
@@ -355,6 +378,7 @@ export class MailboxDO extends DurableObject<Env> {
 				lif.id, lif.subject, lif.sender, lif.recipient, lif.date,
 				lif.read, lif.starred, lif.thread_id, lif.folder_id,
 				lif.in_reply_to, lif.email_references,
+				lif.snoozed_until, lif.send_at,
 				SUBSTR(lif.body, 1, 300) as snippet,
 				cs.thread_count, cs.thread_unread_count, cs.participants,
 				CASE WHEN lmc.folder_id != (SELECT id FROM folders WHERE name = 'sent' LIMIT 1)
@@ -816,6 +840,531 @@ export class MailboxDO extends DurableObject<Env> {
 		return null;
 	}
 
+	// ── Snooze ─────────────────────────────────────────────────────
+
+	/**
+	 * Snooze an email until the given ISO timestamp. The email is moved to
+	 * the snoozed folder and returned to its original folder by the DO
+	 * alarm when the time is reached.
+	 */
+	async snoozeEmail(id: string, until: string) {
+		const email = this.db
+			.select({ id: schema.emails.id, folder_id: schema.emails.folder_id })
+			.from(schema.emails)
+			.where(eq(schema.emails.id, id))
+			.get();
+
+		if (!email) return { error: "Email not found" };
+		if (
+			email.folder_id === Folders.DRAFT ||
+			email.folder_id === Folders.SCHEDULED ||
+			email.folder_id === Folders.SENT
+		) {
+			return { error: "Only received emails can be snoozed" };
+		}
+
+		const returnFolder =
+			email.folder_id === Folders.SNOOZED ? undefined : email.folder_id;
+
+		this.db
+			.update(schema.emails)
+			.set({
+				folder_id: Folders.SNOOZED,
+				snoozed_until: until,
+				...(returnFolder ? { return_folder: returnFolder } : {}),
+			})
+			.where(eq(schema.emails.id, id))
+			.run();
+
+		await this.scheduleNextAlarm();
+		return { status: "snoozed", emailId: id, until };
+	}
+
+	/** Wake a snoozed email immediately, returning it to its original folder. */
+	async unsnoozeEmail(id: string) {
+		const email = this.db
+			.select({
+				id: schema.emails.id,
+				folder_id: schema.emails.folder_id,
+				return_folder: schema.emails.return_folder,
+			})
+			.from(schema.emails)
+			.where(eq(schema.emails.id, id))
+			.get();
+
+		if (!email) return { error: "Email not found" };
+		if (email.folder_id !== Folders.SNOOZED) {
+			return { error: "Email is not snoozed" };
+		}
+
+		this.db
+			.update(schema.emails)
+			.set({
+				folder_id: this.#resolveReturnFolder(email.return_folder),
+				snoozed_until: null,
+				return_folder: null,
+			})
+			.where(eq(schema.emails.id, id))
+			.run();
+
+		await this.scheduleNextAlarm();
+		return { status: "unsnoozed", emailId: id };
+	}
+
+	/** Resolve a stored return folder, falling back to inbox if it no longer exists. */
+	#resolveReturnFolder(returnFolder: string | null | undefined): string {
+		if (!returnFolder) return Folders.INBOX;
+		const folder = this.db
+			.select({ id: schema.folders.id })
+			.from(schema.folders)
+			.where(eq(schema.folders.id, returnFolder))
+			.get();
+		return folder ? returnFolder : Folders.INBOX;
+	}
+
+	// ── Scheduled send ─────────────────────────────────────────────
+
+	/** Cancel a scheduled send, moving the email back to Drafts for editing. */
+	async cancelScheduledSend(id: string) {
+		const email = this.db
+			.select({ id: schema.emails.id, folder_id: schema.emails.folder_id })
+			.from(schema.emails)
+			.where(eq(schema.emails.id, id))
+			.get();
+
+		if (!email) return { error: "Email not found" };
+		if (email.folder_id !== Folders.SCHEDULED) {
+			return { error: "Email is not scheduled" };
+		}
+
+		this.db
+			.update(schema.emails)
+			.set({ folder_id: Folders.DRAFT, send_at: null })
+			.where(eq(schema.emails.id, id))
+			.run();
+
+		await this.scheduleNextAlarm();
+		return { status: "cancelled", emailId: id };
+	}
+
+	// ── Alarm (snooze wake-ups + scheduled sends) ──────────────────
+
+	/**
+	 * Set the DO alarm to the earliest pending snooze wake-up or
+	 * scheduled send. Clears the alarm when nothing is pending.
+	 */
+	async scheduleNextAlarm() {
+		const row = [
+			...this.ctx.storage.sql.exec(
+				`SELECT MIN(t) as next FROM (
+					SELECT snoozed_until as t FROM emails
+					WHERE folder_id = ?1 AND snoozed_until IS NOT NULL
+					UNION ALL
+					SELECT send_at as t FROM emails
+					WHERE folder_id = ?2 AND send_at IS NOT NULL
+				)`,
+				Folders.SNOOZED,
+				Folders.SCHEDULED,
+			),
+		][0] as { next: string | null } | undefined;
+
+		const next = row?.next ? new Date(row.next).getTime() : null;
+		if (next !== null && !Number.isNaN(next)) {
+			// Never set an alarm in the past; fire promptly for overdue items.
+			await this.ctx.storage.setAlarm(Math.max(next, Date.now() + 1000));
+		} else {
+			await this.ctx.storage.deleteAlarm();
+		}
+	}
+
+	async alarm() {
+		const nowIso = new Date().toISOString();
+
+		// 1. Wake due snoozed emails
+		const dueSnoozes = [
+			...this.ctx.storage.sql.exec(
+				`SELECT id, return_folder FROM emails
+				 WHERE folder_id = ?1 AND snoozed_until IS NOT NULL AND snoozed_until <= ?2`,
+				Folders.SNOOZED,
+				nowIso,
+			),
+		] as { id: string; return_folder: string | null }[];
+
+		for (const email of dueSnoozes) {
+			// Mark unread so the returned email surfaces in the unread count.
+			this.db
+				.update(schema.emails)
+				.set({
+					folder_id: this.#resolveReturnFolder(email.return_folder),
+					snoozed_until: null,
+					return_folder: null,
+					read: 0,
+				})
+				.where(eq(schema.emails.id, email.id))
+				.run();
+		}
+
+		// 2. Send due scheduled emails
+		const dueSends = [
+			...this.ctx.storage.sql.exec(
+				`SELECT * FROM emails
+				 WHERE folder_id = ?1 AND send_at IS NOT NULL AND send_at <= ?2`,
+				Folders.SCHEDULED,
+				nowIso,
+			),
+		] as any[];
+
+		for (const email of dueSends) {
+			await this.#sendScheduledEmail(email);
+		}
+
+		await this.scheduleNextAlarm();
+	}
+
+	/**
+	 * Deliver a scheduled email via the Email Service binding. On success the
+	 * email moves to Sent; on failure it moves back to Drafts so nothing is
+	 * silently lost.
+	 */
+	async #sendScheduledEmail(email: any) {
+		const splitList = (value: string | null | undefined): string[] =>
+			(value || "")
+				.split(",")
+				.map((s: string) => s.trim())
+				.filter(Boolean);
+
+		// Recover the display-name "From" header stored at schedule time.
+		let from: string | { email: string; name: string } = email.sender;
+		try {
+			const headers = JSON.parse(email.raw_headers || "[]") as {
+				key: string;
+				value: string;
+			}[];
+			const fromHeader = headers.find((h) => h.key.toLowerCase() === "from");
+			if (fromHeader?.value) {
+				const match = fromHeader.value.match(/^(.*)<(.+)>\s*$/);
+				from = match
+					? { name: match[1].trim().replace(/^"|"$/g, ""), email: match[2].trim() }
+					: fromHeader.value;
+			}
+		} catch {
+			// Malformed raw_headers — fall back to the bare sender address
+		}
+
+		const to = splitList(email.recipient);
+		const cc = splitList(email.cc);
+		const bcc = splitList(email.bcc);
+
+		let references: string[] = [];
+		try {
+			references = email.email_references ? JSON.parse(email.email_references) : [];
+		} catch {
+			// Malformed references — send without them
+		}
+
+		try {
+			await sendEmail(this.env.EMAIL, {
+				to,
+				...(cc.length > 0 ? { cc } : {}),
+				...(bcc.length > 0 ? { bcc } : {}),
+				from,
+				subject: email.subject || "",
+				html: email.body || "",
+				...(email.in_reply_to
+					? {
+							headers: {
+								"In-Reply-To": `<${email.in_reply_to}>`,
+								...(references.length > 0
+									? { References: references.map((r) => `<${r}>`).join(" ") }
+									: {}),
+							},
+						}
+					: {}),
+			});
+
+			this.db
+				.update(schema.emails)
+				.set({
+					folder_id: Folders.SENT,
+					send_at: null,
+					date: new Date().toISOString(),
+					read: 1,
+				})
+				.where(eq(schema.emails.id, email.id))
+				.run();
+		} catch (e) {
+			console.error(
+				`Scheduled send failed for ${email.id}, returning to drafts:`,
+				(e as Error).message,
+			);
+			this.db
+				.update(schema.emails)
+				.set({ folder_id: Folders.DRAFT, send_at: null })
+				.where(eq(schema.emails.id, email.id))
+				.run();
+		}
+	}
+
+	// ── Templates (canned responses) ───────────────────────────────
+
+	async listTemplates() {
+		return this.db
+			.select()
+			.from(schema.templates)
+			.orderBy(asc(schema.templates.name))
+			.all();
+	}
+
+	async createTemplate(template: TemplateData) {
+		const now = new Date().toISOString();
+		return this.db
+			.insert(schema.templates)
+			.values({
+				id: template.id,
+				name: template.name,
+				subject: template.subject ?? null,
+				body: template.body,
+				created_at: now,
+				updated_at: now,
+			})
+			.returning()
+			.get();
+	}
+
+	async updateTemplate(
+		id: string,
+		data: { name?: string; subject?: string | null; body?: string },
+	) {
+		const result = this.db
+			.update(schema.templates)
+			.set({
+				...(data.name !== undefined ? { name: data.name } : {}),
+				...(data.subject !== undefined ? { subject: data.subject } : {}),
+				...(data.body !== undefined ? { body: data.body } : {}),
+				updated_at: new Date().toISOString(),
+			})
+			.where(eq(schema.templates.id, id))
+			.returning()
+			.get();
+		return result ?? null;
+	}
+
+	async deleteTemplate(id: string) {
+		const existing = this.db
+			.select({ id: schema.templates.id })
+			.from(schema.templates)
+			.where(eq(schema.templates.id, id))
+			.get();
+		if (!existing) return false;
+		this.db.delete(schema.templates).where(eq(schema.templates.id, id)).run();
+		return true;
+	}
+
+	// ── Inbox rules ────────────────────────────────────────────────
+
+	async listRules() {
+		const result = this.db
+			.select()
+			.from(schema.rules)
+			.orderBy(asc(schema.rules.created_at))
+			.all();
+		return result.map((rule) => ({ ...rule, enabled: !!rule.enabled }));
+	}
+
+	async createRule(rule: RuleData) {
+		const created = this.db
+			.insert(schema.rules)
+			.values({
+				id: rule.id,
+				name: rule.name,
+				match_field: rule.match_field,
+				match_value: rule.match_value,
+				action: rule.action,
+				action_folder_id: rule.action_folder_id ?? null,
+				enabled: rule.enabled ? 1 : 0,
+				created_at: new Date().toISOString(),
+			})
+			.returning()
+			.get();
+		return { ...created, enabled: !!created.enabled };
+	}
+
+	async updateRule(
+		id: string,
+		data: Partial<Omit<RuleData, "id">>,
+	) {
+		const result = this.db
+			.update(schema.rules)
+			.set({
+				...(data.name !== undefined ? { name: data.name } : {}),
+				...(data.match_field !== undefined ? { match_field: data.match_field } : {}),
+				...(data.match_value !== undefined ? { match_value: data.match_value } : {}),
+				...(data.action !== undefined ? { action: data.action } : {}),
+				...(data.action_folder_id !== undefined
+					? { action_folder_id: data.action_folder_id }
+					: {}),
+				...(data.enabled !== undefined ? { enabled: data.enabled ? 1 : 0 } : {}),
+			})
+			.where(eq(schema.rules.id, id))
+			.returning()
+			.get();
+		if (!result) return null;
+		return { ...result, enabled: !!result.enabled };
+	}
+
+	async deleteRule(id: string) {
+		const existing = this.db
+			.select({ id: schema.rules.id })
+			.from(schema.rules)
+			.where(eq(schema.rules.id, id))
+			.get();
+		if (!existing) return false;
+		this.db.delete(schema.rules).where(eq(schema.rules.id, id)).run();
+		return true;
+	}
+
+	/**
+	 * Evaluate enabled inbox rules against a just-received email and apply
+	 * matching actions. The first matching folder action (move/trash/spam)
+	 * wins; star and mark-read actions accumulate across all matches.
+	 * Returns the resulting folder so the caller can decide whether to
+	 * trigger downstream processing (e.g. skip auto-draft for spam).
+	 */
+	async applyInboundRules(emailId: string) {
+		const email = this.db
+			.select({
+				id: schema.emails.id,
+				sender: schema.emails.sender,
+				subject: schema.emails.subject,
+				body: schema.emails.body,
+			})
+			.from(schema.emails)
+			.where(eq(schema.emails.id, emailId))
+			.get();
+
+		if (!email) return { folderId: Folders.INBOX, matched: [] as string[] };
+
+		const enabledRules = this.db
+			.select()
+			.from(schema.rules)
+			.where(eq(schema.rules.enabled, 1))
+			.orderBy(asc(schema.rules.created_at))
+			.all();
+
+		let targetFolder: string | null = null;
+		let star = false;
+		let markRead = false;
+		const matched: string[] = [];
+
+		for (const rule of enabledRules) {
+			const fieldValue = (
+				rule.match_field === "sender"
+					? email.sender
+					: rule.match_field === "subject"
+						? email.subject
+						: email.body
+			) ?? "";
+			const needle = rule.match_value.toLowerCase().trim();
+			if (!needle || !fieldValue.toLowerCase().includes(needle)) continue;
+
+			matched.push(rule.name);
+			switch (rule.action) {
+				case "star":
+					star = true;
+					break;
+				case "mark_read":
+					markRead = true;
+					break;
+				case "trash":
+					targetFolder = targetFolder ?? Folders.TRASH;
+					break;
+				case "spam":
+					targetFolder = targetFolder ?? Folders.SPAM;
+					break;
+				case "move": {
+					if (targetFolder || !rule.action_folder_id) break;
+					const folder = this.db
+						.select({ id: schema.folders.id })
+						.from(schema.folders)
+						.where(eq(schema.folders.id, rule.action_folder_id))
+						.get();
+					if (folder) targetFolder = folder.id;
+					break;
+				}
+			}
+		}
+
+		if (matched.length > 0) {
+			this.db
+				.update(schema.emails)
+				.set({
+					...(targetFolder ? { folder_id: targetFolder } : {}),
+					...(star ? { starred: 1 } : {}),
+					...(markRead ? { read: 1 } : {}),
+				})
+				.where(eq(schema.emails.id, emailId))
+				.run();
+		}
+
+		return { folderId: targetFolder ?? Folders.INBOX, matched };
+	}
+
+	// ── Contacts ───────────────────────────────────────────────────
+
+	/**
+	 * Aggregate frequent correspondents from received senders and sent
+	 * recipients. Comma-separated recipient lists are split in JS since
+	 * SQLite lacks a portable string-split.
+	 */
+	async getContacts(query?: string, limit: number = 8) {
+		const cappedLimit = Math.min(Math.max(limit, 1), 50);
+		const counts = new Map<string, number>();
+
+		const senderRows = [
+			...this.ctx.storage.sql.exec(
+				`SELECT sender as addr, COUNT(*) as cnt FROM emails
+				 WHERE folder_id NOT IN (?1, ?2, ?3) AND sender != ''
+				 GROUP BY sender ORDER BY cnt DESC LIMIT 500`,
+				Folders.SENT,
+				Folders.DRAFT,
+				Folders.SCHEDULED,
+			),
+		] as { addr: string; cnt: number }[];
+
+		for (const row of senderRows) {
+			const addr = row.addr.toLowerCase().trim();
+			if (addr) counts.set(addr, (counts.get(addr) || 0) + row.cnt);
+		}
+
+		const recipientRows = [
+			...this.ctx.storage.sql.exec(
+				`SELECT recipient, cc FROM emails
+				 WHERE folder_id = ?1
+				 ORDER BY date DESC LIMIT 500`,
+				Folders.SENT,
+			),
+		] as { recipient: string | null; cc: string | null }[];
+
+		for (const row of recipientRows) {
+			for (const field of [row.recipient, row.cc]) {
+				for (const raw of (field || "").split(",")) {
+					const addr = raw.toLowerCase().trim();
+					// Weight sent-to addresses higher: people you write to matter more
+					if (addr && addr.includes("@")) {
+						counts.set(addr, (counts.get(addr) || 0) + 2);
+					}
+				}
+			}
+		}
+
+		const normalizedQuery = query?.toLowerCase().trim();
+		return [...counts.entries()]
+			.filter(([addr]) => !normalizedQuery || addr.includes(normalizedQuery))
+			.sort((a, b) => b[1] - a[1])
+			.slice(0, cappedLimit)
+			.map(([email, count]) => ({ email, count }));
+	}
+
 	// ── Email creation (Drizzle) ───────────────────────────────────
 
 	async createEmail(
@@ -862,6 +1411,9 @@ export class MailboxDO extends DurableObject<Env> {
 				thread_id: email.thread_id ?? null,
 				message_id: email.message_id ?? null,
 				raw_headers: email.raw_headers ?? null,
+				snoozed_until: email.snoozed_until ?? null,
+				return_folder: email.return_folder ?? null,
+				send_at: email.send_at ?? null,
 			})
 			.run();
 

@@ -6,6 +6,8 @@ import { Badge, Button, Input, Loader, useKumoToastManager } from "@cloudflare/k
 import { RobotIcon, ArrowCounterClockwiseIcon } from "@phosphor-icons/react";
 import { useEffect, useState } from "react";
 import { useParams } from "react-router";
+import RulesSection from "~/components/settings/RulesSection";
+import TemplatesSection from "~/components/settings/TemplatesSection";
 import { useMailbox, useUpdateMailbox } from "~/queries/mailboxes";
 
 // Placeholder shown in the textarea when no custom prompt is set.
@@ -132,6 +134,12 @@ export default function SettingsRoute() {
 						Save Changes
 					</Button>
 				</div>
+
+				{/* Email templates (canned responses) */}
+				{mailboxId && <TemplatesSection mailboxId={mailboxId} />}
+
+				{/* Inbox rules */}
+				{mailboxId && <RulesSection mailboxId={mailboxId} />}
 			</div>
 		</div>
 	);

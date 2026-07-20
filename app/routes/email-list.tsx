@@ -384,6 +384,16 @@ export default function EmailListRoute() {
 														</span>
 													</Tooltip>
 												)}
+												{email.snoozed_until && (
+													<span className="shrink-0 text-xs text-kumo-warning font-medium">
+														Until {formatListDate(email.snoozed_until)}
+													</span>
+												)}
+												{email.send_at && (
+													<span className="shrink-0 text-xs text-kumo-subtle font-medium">
+														Sends {formatListDate(email.send_at)}
+													</span>
+												)}
 												<span className="text-sm text-kumo-subtle shrink-0 ml-auto">
 													{formatListDate(email.date)}
 												</span>

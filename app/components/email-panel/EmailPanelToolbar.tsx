@@ -5,9 +5,11 @@
 import { Button, Tooltip } from "@cloudflare/kumo";
 import { useEffect, useRef, useState } from "react";
 import {
+	AlarmIcon,
 	ArrowBendUpLeftIcon,
 	ArrowBendUpRightIcon,
 	ArrowLeftIcon,
+	CalendarSlashIcon,
 	ChatCircleIcon,
 	CodeIcon,
 	EnvelopeOpenIcon,
@@ -25,6 +27,8 @@ interface EmailPanelToolbarProps {
 	email: Email;
 	mailboxId?: string;
 	isDraftFolder: boolean;
+	isSnoozedFolder?: boolean;
+	isScheduledFolder?: boolean;
 	isSending: boolean;
 	moveToFolders: Folder[];
 	lastReceivedMessage?: Email;
@@ -37,6 +41,9 @@ interface EmailPanelToolbarProps {
 	onToggleStar: () => void;
 	onToggleRead: () => void;
 	onMove: (folderId: string) => void;
+	onSnooze?: (until: string) => void;
+	onUnsnooze?: () => void;
+	onCancelSchedule?: () => void;
 	onViewSource: () => void;
 	onDelete: () => void;
 }
@@ -45,6 +52,8 @@ export default function EmailPanelToolbar({
 	email,
 	mailboxId,
 	isDraftFolder,
+	isSnoozedFolder,
+	isScheduledFolder,
 	isSending,
 	moveToFolders,
 	onBack,
@@ -56,6 +65,9 @@ export default function EmailPanelToolbar({
 	onToggleStar,
 	onToggleRead,
 	onMove,
+	onSnooze,
+	onUnsnooze,
+	onCancelSchedule,
 	onViewSource,
 	onDelete,
 }: EmailPanelToolbarProps) {
@@ -158,6 +170,36 @@ export default function EmailPanelToolbar({
 
 			<MoveToFolderMenu folders={moveToFolders} onMove={onMove} />
 
+			{!isDraftFolder && !isScheduledFolder && !isSnoozedFolder && onSnooze && (
+				<SnoozeMenu onSnooze={onSnooze} />
+			)}
+
+			{isSnoozedFolder && onUnsnooze && (
+				<Tooltip content="Unsnooze — return to inbox now" side="bottom" asChild>
+					<Button
+						variant="ghost"
+						shape="square"
+						size="sm"
+						icon={<AlarmIcon size={18} className="text-kumo-warning" />}
+						onClick={onUnsnooze}
+						aria-label="Unsnooze"
+					/>
+				</Tooltip>
+			)}
+
+			{isScheduledFolder && onCancelSchedule && (
+				<Tooltip content="Cancel scheduled send — move to drafts" side="bottom" asChild>
+					<Button
+						variant="ghost"
+						shape="square"
+						size="sm"
+						icon={<CalendarSlashIcon size={18} />}
+						onClick={onCancelSchedule}
+						aria-label="Cancel scheduled send"
+					/>
+				</Tooltip>
+			)}
+
 			<div className="ml-auto flex items-center gap-0.5">
 				<Tooltip content="View source" side="bottom" asChild>
 					<Button
@@ -191,6 +233,103 @@ export default function EmailPanelToolbar({
 					/>
 				</Tooltip>
 			</div>
+		</div>
+	);
+}
+
+function getSnoozePresets(): { label: string; hint: string; until: Date }[] {
+	const now = new Date();
+
+	const laterToday = new Date(now.getTime() + 4 * 60 * 60 * 1000);
+
+	const tomorrowMorning = new Date(now);
+	tomorrowMorning.setDate(tomorrowMorning.getDate() + 1);
+	tomorrowMorning.setHours(8, 0, 0, 0);
+
+	const nextWeek = new Date(now);
+	// Next Monday at 8:00
+	const daysUntilMonday = ((8 - nextWeek.getDay()) % 7) || 7;
+	nextWeek.setDate(nextWeek.getDate() + daysUntilMonday);
+	nextWeek.setHours(8, 0, 0, 0);
+
+	const timeFmt: Intl.DateTimeFormatOptions = { hour: "numeric", minute: "2-digit" };
+	const dayFmt: Intl.DateTimeFormatOptions = { weekday: "short", hour: "numeric", minute: "2-digit" };
+
+	return [
+		{ label: "Later today", hint: laterToday.toLocaleTimeString(undefined, timeFmt), until: laterToday },
+		{ label: "Tomorrow", hint: tomorrowMorning.toLocaleString(undefined, dayFmt), until: tomorrowMorning },
+		{ label: "Next week", hint: nextWeek.toLocaleString(undefined, dayFmt), until: nextWeek },
+	];
+}
+
+function SnoozeMenu({ onSnooze }: { onSnooze: (until: string) => void }) {
+	const [open, setOpen] = useState(false);
+	const [customValue, setCustomValue] = useState("");
+	const ref = useRef<HTMLDivElement>(null);
+
+	useEffect(() => {
+		if (!open) return;
+		const handler = (e: MouseEvent) => {
+			if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+		};
+		document.addEventListener("mousedown", handler);
+		return () => document.removeEventListener("mousedown", handler);
+	}, [open]);
+
+	const pick = (until: Date) => {
+		onSnooze(until.toISOString());
+		setOpen(false);
+	};
+
+	const handleCustom = () => {
+		if (!customValue) return;
+		const date = new Date(customValue);
+		if (Number.isNaN(date.getTime()) || date.getTime() <= Date.now()) return;
+		pick(date);
+	};
+
+	return (
+		<div ref={ref} className="relative">
+			<Tooltip content="Snooze" side="bottom" asChild>
+				<Button
+					variant="ghost"
+					shape="square"
+					size="sm"
+					icon={<AlarmIcon size={18} />}
+					onClick={() => setOpen((o) => !o)}
+					aria-label="Snooze"
+				/>
+			</Tooltip>
+			{open && (
+				<div className="absolute top-full left-0 z-50 mt-1 min-w-[220px] rounded-lg border border-kumo-line bg-kumo-elevated shadow-lg py-1">
+					<div className="px-3 py-1.5 text-xs font-medium text-kumo-subtle">Snooze until</div>
+					<div className="h-px bg-kumo-line my-1" />
+					{getSnoozePresets().map((preset) => (
+						<button
+							key={preset.label}
+							type="button"
+							className="w-full flex items-center justify-between px-3 py-1.5 text-sm text-kumo-default hover:bg-kumo-overlay transition-colors"
+							onClick={() => pick(preset.until)}
+						>
+							<span>{preset.label}</span>
+							<span className="text-xs text-kumo-subtle">{preset.hint}</span>
+						</button>
+					))}
+					<div className="h-px bg-kumo-line my-1" />
+					<div className="px-3 py-2 space-y-2">
+						<input
+							type="datetime-local"
+							value={customValue}
+							onChange={(e) => setCustomValue(e.target.value)}
+							className="w-full rounded-md border border-kumo-line bg-kumo-recessed px-2 py-1 text-xs text-kumo-default focus:outline-none focus:ring-1 focus:ring-kumo-ring"
+							aria-label="Custom snooze time"
+						/>
+						<Button variant="secondary" size="xs" onClick={handleCustom} disabled={!customValue} className="w-full">
+							Snooze until date
+						</Button>
+					</div>
+				</div>
+			)}
 		</div>
 	);
 }

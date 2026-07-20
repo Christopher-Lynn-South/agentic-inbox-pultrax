@@ -19,6 +19,8 @@ import {
 	toolSendEmail,
 	toolMarkEmailRead,
 	toolMoveEmail,
+	toolSnoozeEmail,
+	toolListTemplates,
 } from "../lib/tools";
 import { Folders, FOLDER_TOOL_DESCRIPTION, MOVE_FOLDER_TOOL_DESCRIPTION } from "../../shared/folders";
 import type { Env } from "../types";
@@ -396,6 +398,40 @@ export class EmailMCP extends McpAgent<Env> {
 				const denied = await verifyMailbox(mailboxId);
 				if (denied) return denied;
 				const result = await toolMarkEmailRead(env, mailboxId, emailId, read);
+				return mcpText(result);
+			},
+		);
+
+		// ── snooze_email ───────────────────────────────────────────
+		this.server.tool(
+			"snooze_email",
+			"Snooze an email until a future time. The email moves to the Snoozed folder and automatically returns to the inbox (marked unread) at the given time.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+				emailId: z.string().describe("The email ID to snooze"),
+				until: z
+					.string()
+					.describe("ISO 8601 timestamp for when the email should return to the inbox. Must be in the future."),
+			},
+			async ({ mailboxId, emailId, until }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				const result = await toolSnoozeEmail(env, mailboxId, emailId, until);
+				return mcpResult(result as Record<string, unknown>);
+			},
+		);
+
+		// ── list_templates ─────────────────────────────────────────
+		this.server.tool(
+			"list_templates",
+			"List the mailbox's saved email templates (canned responses). Each template has a name, optional subject, and body.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+			},
+			async ({ mailboxId }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				const result = await toolListTemplates(env, mailboxId);
 				return mcpText(result);
 			},
 		);

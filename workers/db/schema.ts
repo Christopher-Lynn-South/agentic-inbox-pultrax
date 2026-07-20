@@ -29,6 +29,38 @@ export const emails = sqliteTable("emails", {
 	thread_id: text("thread_id"),
 	message_id: text("message_id"),
 	raw_headers: text("raw_headers"),
+	// Snooze: when set (and email is in the snoozed folder), the DO alarm
+	// returns the email to `return_folder` at this ISO timestamp.
+	snoozed_until: text("snoozed_until"),
+	// Folder the email came from before snoozing (defaults to inbox).
+	return_folder: text("return_folder"),
+	// Scheduled send: when set (and email is in the scheduled folder), the
+	// DO alarm sends the email at this ISO timestamp.
+	send_at: text("send_at"),
+});
+
+export const templates = sqliteTable("templates", {
+	id: text("id").primaryKey(),
+	name: text("name").notNull(),
+	subject: text("subject"),
+	body: text("body").notNull(),
+	created_at: text("created_at").notNull(),
+	updated_at: text("updated_at").notNull(),
+});
+
+export const rules = sqliteTable("rules", {
+	id: text("id").primaryKey(),
+	name: text("name").notNull(),
+	// Field to match against: 'sender' | 'subject' | 'body'
+	match_field: text("match_field").notNull(),
+	// Case-insensitive substring the field must contain
+	match_value: text("match_value").notNull(),
+	// Action to apply: 'move' | 'star' | 'mark_read' | 'trash' | 'spam'
+	action: text("action").notNull(),
+	// Target folder when action = 'move'
+	action_folder_id: text("action_folder_id"),
+	enabled: integer("enabled").notNull().default(1),
+	created_at: text("created_at").notNull(),
 });
 
 export const attachments = sqliteTable("attachments", {

@@ -373,6 +373,36 @@ export async function toolDiscardDraft(
 	return { status: "discarded", draftId };
 }
 
+// ── snooze_email ───────────────────────────────────────────────────
+
+export async function toolSnoozeEmail(
+	env: Env,
+	mailboxId: string,
+	emailId: string,
+	until: string,
+) {
+	const untilDate = new Date(until);
+	if (Number.isNaN(untilDate.getTime())) {
+		return { error: "Invalid snooze timestamp — use ISO 8601 format" };
+	}
+	if (untilDate.getTime() <= Date.now()) {
+		return { error: "Snooze time must be in the future" };
+	}
+	const stub = getMailboxStub(env, mailboxId);
+	return (stub as unknown as {
+		snoozeEmail: (id: string, until: string) => Promise<Record<string, unknown>>;
+	}).snoozeEmail(emailId, untilDate.toISOString());
+}
+
+// ── list_templates ─────────────────────────────────────────────────
+
+export async function toolListTemplates(env: Env, mailboxId: string) {
+	const stub = getMailboxStub(env, mailboxId);
+	return (stub as unknown as {
+		listTemplates: () => Promise<unknown[]>;
+	}).listTemplates();
+}
+
 // ── delete_email ───────────────────────────────────────────────────
 
 export async function toolDeleteEmail(

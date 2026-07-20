@@ -2,7 +2,7 @@
 // Licensed under the Apache 2.0 license found in the LICENSE file or at:
 //     https://opensource.org/licenses/Apache-2.0
 
-import type { Email, Folder, Mailbox } from "~/types";
+import type { Contact, Email, Folder, Mailbox, Rule, Template } from "~/types";
 
 const REQUEST_TIMEOUT_MS = 30_000;
 
@@ -160,6 +160,45 @@ const api = {
 	// Search
 	searchEmails: (mailboxId: string, params: Record<string, string>) =>
 		get<EmailListResponse | Email[]>(`/api/v1/mailboxes/${mailboxId}/search`, { params }),
+
+	// Snooze
+	snoozeEmail: (mailboxId: string, id: string, until: string) =>
+		post<{ status: string }>(`/api/v1/mailboxes/${mailboxId}/emails/${id}/snooze`, { until }),
+	unsnoozeEmail: (mailboxId: string, id: string) =>
+		post<{ status: string }>(`/api/v1/mailboxes/${mailboxId}/emails/${id}/unsnooze`),
+
+	// Scheduled send
+	cancelScheduledSend: (mailboxId: string, id: string) =>
+		post<{ status: string }>(`/api/v1/mailboxes/${mailboxId}/emails/${id}/cancel-schedule`),
+
+	// Templates
+	listTemplates: (mailboxId: string) =>
+		get<Template[]>(`/api/v1/mailboxes/${mailboxId}/templates`),
+	createTemplate: (mailboxId: string, template: { name: string; subject?: string; body: string }) =>
+		post<Template>(`/api/v1/mailboxes/${mailboxId}/templates`, template),
+	updateTemplate: (mailboxId: string, id: string, template: { name?: string; subject?: string; body?: string }) =>
+		put<Template>(`/api/v1/mailboxes/${mailboxId}/templates/${id}`, template),
+	deleteTemplate: (mailboxId: string, id: string) =>
+		del<void>(`/api/v1/mailboxes/${mailboxId}/templates/${id}`),
+
+	// Rules
+	listRules: (mailboxId: string) =>
+		get<Rule[]>(`/api/v1/mailboxes/${mailboxId}/rules`),
+	createRule: (mailboxId: string, rule: Omit<Rule, "id" | "created_at">) =>
+		post<Rule>(`/api/v1/mailboxes/${mailboxId}/rules`, rule),
+	updateRule: (mailboxId: string, id: string, rule: Partial<Omit<Rule, "id" | "created_at">>) =>
+		put<Rule>(`/api/v1/mailboxes/${mailboxId}/rules/${id}`, rule),
+	deleteRule: (mailboxId: string, id: string) =>
+		del<void>(`/api/v1/mailboxes/${mailboxId}/rules/${id}`),
+
+	// Contacts
+	getContacts: (mailboxId: string, query?: string, limit?: number) =>
+		get<Contact[]>(`/api/v1/mailboxes/${mailboxId}/contacts`, {
+			params: {
+				...(query ? { query } : {}),
+				...(limit ? { limit: String(limit) } : {}),
+			},
+		}),
 };
 
 export default api;

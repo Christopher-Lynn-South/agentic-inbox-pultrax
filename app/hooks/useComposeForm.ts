@@ -17,6 +17,7 @@ import {
 import { useDeleteEmail, useForwardEmail, useReplyToEmail, useSaveDraft, useSendEmail } from "~/queries/emails";
 import { useMailbox } from "~/queries/mailboxes";
 import { useUIStore } from "~/hooks/useUIStore";
+import type { Template } from "~/types";
 
 function appendUniqueAddress(
 	addresses: string[],
@@ -191,6 +192,27 @@ export function useComposeForm(mailboxId?: string, _folder?: string) {
 
 	const sigBlock = useMemo(() => getSignatureBlock(currentMailbox?.settings), [currentMailbox]);
 
+	// Replies and forwards go through their dedicated endpoints, which send
+	// immediately. Only plain new messages support scheduled send.
+	const canSchedule = useMemo(() => {
+		const originalId = composeOptions.originalEmail?.id || composeOptions.draftEmail?.in_reply_to;
+		const mode = composeOptions.mode;
+		return !(originalId && (mode === "reply" || mode === "reply-all" || mode === "forward"));
+	}, [composeOptions]);
+
+	/**
+	 * Insert a template (canned response) into the compose form. The template
+	 * body is plain text — convert to simple HTML and prepend so the
+	 * signature block stays at the bottom.
+	 */
+	const applyTemplate = (template: Template) => {
+		if (template.subject && !subject.trim()) {
+			setSubject(template.subject);
+		}
+		const templateHtml = `<div style="white-space:pre-wrap">${escapeHtml(template.body).replace(/\n/g, "<br>")}</div>`;
+		setBody(templateHtml + body);
+	};
+
 	useEffect(() => {
 		if (lastInitializedOptionsRef.current === composeOptions) return;
 		lastInitializedOptionsRef.current = composeOptions;
@@ -232,7 +254,7 @@ export function useComposeForm(mailboxId?: string, _folder?: string) {
 		finally { setIsSavingDraft(false); }
 	};
 
-	const handleSend = async (e: FormEvent, onClose: () => void) => {
+	const handleSend = async (e: FormEvent, onClose: () => void, sendAt?: string) => {
 		e.preventDefault(); if (isSending) return; setError(null);
 		if (!currentMailbox || !mailboxId) { setError("No mailbox selected."); return; }
 		const toRecipients = splitEmailList(to);
@@ -240,6 +262,7 @@ export function useComposeForm(mailboxId?: string, _folder?: string) {
 		const ccRecipients = splitEmailList(cc); const bccRecipients = splitEmailList(bcc);
 		const fromName = currentMailbox.settings?.fromName || currentMailbox.name;
 		const from = fromName && fromName !== currentMailbox.email ? { email: currentMailbox.email, name: fromName } : currentMailbox.email;
+		const isScheduled = !!sendAt && canSchedule;
 		const emailData = {
 			to: toEmailListValue(toRecipients),
 			cc: toEmailListValue(ccRecipients),
@@ -248,19 +271,20 @@ export function useComposeForm(mailboxId?: string, _folder?: string) {
 			subject,
 			html: body,
 			text: htmlToPlainText(body),
+			...(isScheduled ? { send_at: sendAt } : {}),
 		};
 		const draftId = composeOptions.draftEmail?.id; const mode = composeOptions.mode; const originalId = composeOptions.originalEmail?.id || composeOptions.draftEmail?.in_reply_to;
-		setIsSending(true); toastManager.add({ title: "Sending email..." });
+		setIsSending(true); toastManager.add({ title: isScheduled ? "Scheduling email..." : "Sending email..." });
 		try {
 			if ((mode === "reply" || mode === "reply-all") && originalId) await replyMutation.mutateAsync({ mailboxId, emailId: originalId, email: emailData });
 			else if (mode === "forward" && originalId) await forwardMutation.mutateAsync({ mailboxId, emailId: originalId, email: emailData });
 			else await sendEmailMutation.mutateAsync({ mailboxId, email: emailData });
 			if (draftId) deleteEmailMutation.mutate({ mailboxId, id: draftId });
-			toastManager.add({ title: "Email sent!" });
+			toastManager.add({ title: isScheduled ? `Email scheduled for ${new Date(sendAt!).toLocaleString()}` : "Email sent!" });
 			onClose();
 		} catch (err: unknown) { const message = (err instanceof Error ? err.message : null) || "Failed to send email."; setError(message); toastManager.add({ title: message, variant: "error" }); }
 		finally { setIsSending(false); }
 	};
 
-	return { to, setTo, cc, setCc, bcc, setBcc, showCcBcc, setShowCcBcc, subject, setSubject, body, setBody, error, setError, isSavingDraft, isSending, formTitle, handleSaveDraft, handleSend, closeCompose, closePanel };
+	return { to, setTo, cc, setCc, bcc, setBcc, showCcBcc, setShowCcBcc, subject, setSubject, body, setBody, error, setError, isSavingDraft, isSending, formTitle, canSchedule, applyTemplate, handleSaveDraft, handleSend, closeCompose, closePanel };
 }

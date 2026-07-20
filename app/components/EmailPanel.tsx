@@ -13,7 +13,7 @@ import SingleMessageView from "~/components/email-panel/SingleMessageView";
 import ThreadMessage from "~/components/email-panel/ThreadMessage";
 import { splitEmailList, toEmailListValue } from "~/lib/utils";
 import api from "~/services/api";
-import { useDeleteEmail, useEmail, useMoveEmail, useReplyToEmail, useSendEmail, useThreadReplies, useUpdateEmail } from "~/queries/emails";
+import { useCancelScheduledSend, useDeleteEmail, useEmail, useMoveEmail, useReplyToEmail, useSendEmail, useSnoozeEmail, useThreadReplies, useUnsnoozeEmail, useUpdateEmail } from "~/queries/emails";
 import { useFolders } from "~/queries/folders";
 import { useMailbox } from "~/queries/mailboxes";
 import { useUIStore } from "~/hooks/useUIStore";
@@ -51,6 +51,11 @@ export default function EmailPanel({ emailId }: { emailId: string }) {
 	const [expandedMessages, setExpandedMessages] = useState<Set<string>>(new Set());
 	const [previewImage, setPreviewImage] = useState<{ url: string; filename: string } | null>(null);
 	const isDraftFolder = folder === Folders.DRAFT;
+	const isSnoozedFolder = folder === Folders.SNOOZED;
+	const isScheduledFolder = folder === Folders.SCHEDULED;
+	const snoozeMut = useSnoozeEmail();
+	const unsnoozeMut = useUnsnoozeEmail();
+	const cancelScheduleMut = useCancelScheduledSend();
 
 	const threadReplies = useMemo(() => {
 		if (!threadRepliesRaw || !email) return [];
@@ -88,6 +93,30 @@ export default function EmailPanel({ emailId }: { emailId: string }) {
 	if (!email) return <EmailPanelSkeleton />;
 
 	const toggleStar = () => { if (mailboxId) updateEmail.mutate({ mailboxId, id: email.id, data: { starred: !email.starred } }); };
+	const handleSnooze = (until: string) => {
+		if (!mailboxId) return;
+		snoozeMut.mutate({ mailboxId, id: email.id, until }, {
+			onSuccess: () => toastManager.add({ title: `Snoozed until ${new Date(until).toLocaleString()}` }),
+			onError: (err) => toastManager.add({ title: (err instanceof Error ? err.message : null) || "Failed to snooze", variant: "error" }),
+		});
+		closePanel();
+	};
+	const handleUnsnooze = () => {
+		if (!mailboxId) return;
+		unsnoozeMut.mutate({ mailboxId, id: email.id }, {
+			onSuccess: () => toastManager.add({ title: "Returned to inbox" }),
+			onError: (err) => toastManager.add({ title: (err instanceof Error ? err.message : null) || "Failed to unsnooze", variant: "error" }),
+		});
+		closePanel();
+	};
+	const handleCancelSchedule = () => {
+		if (!mailboxId) return;
+		cancelScheduleMut.mutate({ mailboxId, id: email.id }, {
+			onSuccess: () => toastManager.add({ title: "Scheduled send cancelled — moved to Drafts" }),
+			onError: (err) => toastManager.add({ title: (err instanceof Error ? err.message : null) || "Failed to cancel scheduled send", variant: "error" }),
+		});
+		closePanel();
+	};
 	const handleMove = (folderId: string) => { if (mailboxId) { moveEmailMut.mutate({ mailboxId, id: email.id, folderId }); closePanel(); } };
 	const handleDelete = () => { if (mailboxId) { if (!window.confirm("Are you sure you want to delete this email?")) return; deleteEmailMut.mutate({ mailboxId, id: email.id }); closePanel(); } };
 
@@ -145,6 +174,8 @@ export default function EmailPanel({ emailId }: { emailId: string }) {
 				email={email}
 				mailboxId={mailboxId}
 				isDraftFolder={isDraftFolder}
+				isSnoozedFolder={isSnoozedFolder}
+				isScheduledFolder={isScheduledFolder}
 				isSending={isSending}
 				moveToFolders={moveToFolders}
 				onBack={closePanel}
@@ -171,6 +202,9 @@ export default function EmailPanel({ emailId }: { emailId: string }) {
 					}
 				}}
 				onMove={handleMove}
+				onSnooze={handleSnooze}
+				onUnsnooze={handleUnsnooze}
+				onCancelSchedule={handleCancelSchedule}
 				onViewSource={() => setSourceViewEmail(email)}
 				onDelete={handleDelete}
 			/>

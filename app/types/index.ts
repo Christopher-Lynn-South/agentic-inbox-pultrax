@@ -48,6 +48,38 @@ export interface Email {
 	participants?: string;
 	needs_reply?: boolean;
 	has_draft?: boolean;
+	// Snooze / scheduled send
+	snoozed_until?: string | null;
+	return_folder?: string | null;
+	send_at?: string | null;
+}
+
+export interface Template {
+	id: string;
+	name: string;
+	subject?: string | null;
+	body: string;
+	created_at: string;
+	updated_at: string;
+}
+
+export type RuleField = "sender" | "subject" | "body";
+export type RuleAction = "move" | "star" | "mark_read" | "trash" | "spam";
+
+export interface Rule {
+	id: string;
+	name: string;
+	match_field: RuleField;
+	match_value: string;
+	action: RuleAction;
+	action_folder_id?: string | null;
+	enabled: boolean;
+	created_at: string;
+}
+
+export interface Contact {
+	email: string;
+	count: number;
 }
 
 export interface Attachment {

@@ -168,4 +168,39 @@ export const mailboxMigrations: Migration[] = [
             CREATE INDEX IF NOT EXISTS idx_emails_folder_date ON emails(folder_id, date DESC);
         `,
 	},
+	{
+		name: "9_add_snooze_schedule_templates_rules",
+		sql: txn(`
+            INSERT INTO folders (id, name, is_deletable) VALUES
+                ('snoozed', 'Snoozed', 0),
+                ('scheduled', 'Scheduled', 0);
+
+            ALTER TABLE emails ADD COLUMN snoozed_until TEXT;
+            ALTER TABLE emails ADD COLUMN return_folder TEXT;
+            ALTER TABLE emails ADD COLUMN send_at TEXT;
+
+            CREATE INDEX idx_emails_snoozed_until ON emails(snoozed_until);
+            CREATE INDEX idx_emails_send_at ON emails(send_at);
+
+            CREATE TABLE templates (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                subject TEXT,
+                body TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE rules (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                match_field TEXT NOT NULL,
+                match_value TEXT NOT NULL,
+                action TEXT NOT NULL,
+                action_folder_id TEXT,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL
+            );
+        `),
+	},
 ];
