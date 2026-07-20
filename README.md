@@ -38,10 +38,18 @@ https://github.com/cloudflare/agentic-inbox/issues/4#issuecomment-4269118513
 ## Features
 
 - **Full email client** — Send and receive emails via Cloudflare Email Routing with a rich text composer, reply/forward threading, folder organization, search, and attachments
+- **Snooze** — Hide an email until later; it returns to the inbox as unread at the chosen time (powered by Durable Object alarms)
+- **Scheduled send** — Compose now, deliver later with presets or a custom date/time; scheduled emails live in a dedicated folder and can be canceled before they go out
+- **Labels** — Color-coded labels with counts in the sidebar, a label picker in the email toolbar, and `label:"Name"` search filtering
+- **Email templates** — Saved canned responses, insertable from the composer and usable by the AI agent when drafting
+- **Inbox rules** — "If sender/subject/body contains X → move / label / star / mark read" automation applied to every incoming email; emails filed away by rules skip AI auto-drafting
+- **Auto-reply** — Optional automatic acknowledgement of incoming email, loop-safe (never replies to no-reply/mailer-daemon senders, max one reply per sender per 24h)
+- **Contacts** — Auto-collected from sent and received mail, with recipient autocomplete in the composer
 - **Per-mailbox isolation** — Each mailbox runs in its own Durable Object with SQLite storage and R2 for attachments
-- **Built-in AI agent** — Side panel with 9 email tools for reading, searching, drafting, and sending
+- **Built-in AI agent** — Side panel with 15 email tools for reading, searching, drafting, organizing (star/snooze/label), templates, and contacts
 - **Auto-draft on new email** — Agent automatically reads inbound emails and generates draft replies, always requiring explicit confirmation before sending
-- **Configurable and persistent** — Custom system prompts per mailbox, persistent chat history, streaming markdown responses, and tool call visibility
+- **MCP server** — All email + organizer tools exposed over the Model Context Protocol at `/mcp` for external AI tools
+- **Configurable and persistent** — Custom system prompts, signatures, and auto-reply per mailbox, persistent chat history, streaming markdown responses, and tool call visibility
 
 ## Stack
 

@@ -2,7 +2,7 @@
 // Licensed under the Apache 2.0 license found in the LICENSE file or at:
 //     https://opensource.org/licenses/Apache-2.0
 
-import type { Email, Folder, Mailbox } from "~/types";
+import type { Contact, Email, Folder, Label, Mailbox, Rule, Template } from "~/types";
 
 const REQUEST_TIMEOUT_MS = 30_000;
 
@@ -160,6 +160,59 @@ const api = {
 	// Search
 	searchEmails: (mailboxId: string, params: Record<string, string>) =>
 		get<EmailListResponse | Email[]>(`/api/v1/mailboxes/${mailboxId}/search`, { params }),
+
+	// Snooze / Scheduled send
+	snoozeEmail: (mailboxId: string, id: string, until: string) =>
+		post<{ id: string; snoozed_until: string }>(`/api/v1/mailboxes/${mailboxId}/emails/${id}/snooze`, { until }),
+	unsnoozeEmail: (mailboxId: string, id: string) =>
+		post<{ id: string; status: string }>(`/api/v1/mailboxes/${mailboxId}/emails/${id}/unsnooze`),
+	scheduleEmail: (mailboxId: string, id: string, sendAt: string) =>
+		post<{ id: string; scheduled_at: string; status: string }>(`/api/v1/mailboxes/${mailboxId}/emails/${id}/schedule`, { sendAt }),
+	unscheduleEmail: (mailboxId: string, id: string) =>
+		post<{ id: string; status: string }>(`/api/v1/mailboxes/${mailboxId}/emails/${id}/unschedule`),
+
+	// Labels
+	listLabels: (mailboxId: string) =>
+		get<Label[]>(`/api/v1/mailboxes/${mailboxId}/labels`),
+	createLabel: (mailboxId: string, name: string, color?: string) =>
+		post<Label>(`/api/v1/mailboxes/${mailboxId}/labels`, { name, color }),
+	updateLabel: (mailboxId: string, id: string, data: { name?: string; color?: string }) =>
+		put<Label>(`/api/v1/mailboxes/${mailboxId}/labels/${id}`, data),
+	deleteLabel: (mailboxId: string, id: string) =>
+		del<void>(`/api/v1/mailboxes/${mailboxId}/labels/${id}`),
+	addEmailLabel: (mailboxId: string, emailId: string, labelId: string) =>
+		post<void>(`/api/v1/mailboxes/${mailboxId}/emails/${emailId}/labels`, { labelId }),
+	removeEmailLabel: (mailboxId: string, emailId: string, labelId: string) =>
+		del<void>(`/api/v1/mailboxes/${mailboxId}/emails/${emailId}/labels/${labelId}`),
+
+	// Templates
+	listTemplates: (mailboxId: string) =>
+		get<Template[]>(`/api/v1/mailboxes/${mailboxId}/templates`),
+	createTemplate: (mailboxId: string, data: { name: string; subject?: string; body: string }) =>
+		post<Template>(`/api/v1/mailboxes/${mailboxId}/templates`, data),
+	updateTemplate: (mailboxId: string, id: string, data: { name?: string; subject?: string; body?: string }) =>
+		put<Template>(`/api/v1/mailboxes/${mailboxId}/templates/${id}`, data),
+	deleteTemplate: (mailboxId: string, id: string) =>
+		del<void>(`/api/v1/mailboxes/${mailboxId}/templates/${id}`),
+
+	// Rules
+	listRules: (mailboxId: string) =>
+		get<Rule[]>(`/api/v1/mailboxes/${mailboxId}/rules`),
+	createRule: (mailboxId: string, data: Omit<Rule, "id" | "position">) =>
+		post<Rule>(`/api/v1/mailboxes/${mailboxId}/rules`, data),
+	updateRule: (mailboxId: string, id: string, data: Partial<Omit<Rule, "id">>) =>
+		put<Rule>(`/api/v1/mailboxes/${mailboxId}/rules/${id}`, data),
+	deleteRule: (mailboxId: string, id: string) =>
+		del<void>(`/api/v1/mailboxes/${mailboxId}/rules/${id}`),
+
+	// Contacts
+	listContacts: (mailboxId: string, query?: string, limit?: number) =>
+		get<Contact[]>(`/api/v1/mailboxes/${mailboxId}/contacts`, {
+			params: {
+				...(query ? { query } : {}),
+				...(limit ? { limit: String(limit) } : {}),
+			},
+		}),
 };
 
 export default api;

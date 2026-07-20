@@ -42,12 +42,52 @@ export interface Email {
 	raw_headers?: string | null;
 	attachments?: Attachment[];
 	snippet?: string | null;
+	snoozed_until?: string | null;
+	scheduled_at?: string | null;
+	labels?: Label[];
 	// Thread aggregate fields (only present in threaded list view)
 	thread_count?: number;
 	thread_unread_count?: number;
 	participants?: string;
 	needs_reply?: boolean;
 	has_draft?: boolean;
+}
+
+export interface Label {
+	id: string;
+	name: string;
+	color: string;
+	email_count?: number;
+}
+
+export interface Template {
+	id: string;
+	name: string;
+	subject?: string | null;
+	body: string;
+	created_at?: string;
+	updated_at?: string;
+}
+
+export type RuleField = "sender" | "recipient" | "subject" | "body" | "any";
+export type RuleAction = "move" | "label" | "star" | "mark_read";
+
+export interface Rule {
+	id: string;
+	name: string;
+	enabled: number | boolean;
+	field: RuleField;
+	pattern: string;
+	action: RuleAction;
+	action_value?: string | null;
+	position: number;
+}
+
+export interface Contact {
+	email: string;
+	name?: string | null;
+	last_seen?: string | null;
+	times_seen: number;
 }
 
 export interface Attachment {

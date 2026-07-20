@@ -31,11 +31,12 @@ export interface ParsedSearch {
 	has_attachment?: boolean;
 	date_start?: string;
 	date_end?: string;
+	label?: string;
 }
 
 // Matches operator:value or operator:"quoted value"
 const OPERATOR_RE =
-	/\b(from|to|subject|in|is|has|before|after):(?:"([^"]*?)"|(\S+))/gi;
+	/\b(from|to|subject|in|is|has|before|after|label):(?:"([^"]*?)"|(\S+))/gi;
 
 export function parseSearchQuery(input: string): ParsedSearch {
 	const result: ParsedSearch = { query: "" };
@@ -97,6 +98,9 @@ export function parseSearchQuery(input: string): ParsedSearch {
 				if (value.toLowerCase() === "attachment") {
 					result.has_attachment = true;
 				}
+				break;
+			case "label":
+				result.label = value;
 				break;
 			case "before":
 				result.date_end = normalizeDate(value);

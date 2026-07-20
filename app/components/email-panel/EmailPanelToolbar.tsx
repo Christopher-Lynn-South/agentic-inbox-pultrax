@@ -8,7 +8,10 @@ import {
 	ArrowBendUpLeftIcon,
 	ArrowBendUpRightIcon,
 	ArrowLeftIcon,
+	BellSimpleSlashIcon,
 	ChatCircleIcon,
+	CheckIcon,
+	ClockIcon,
 	CodeIcon,
 	EnvelopeOpenIcon,
 	EnvelopeSimpleIcon,
@@ -16,17 +19,21 @@ import {
 	PaperPlaneTiltIcon,
 	PencilSimpleIcon,
 	StarIcon,
+	TagIcon,
 	TrashIcon,
 	XIcon,
 } from "@phosphor-icons/react";
-import type { Folder, Email } from "~/types";
+import type { Folder, Email, Label } from "~/types";
 
 interface EmailPanelToolbarProps {
 	email: Email;
 	mailboxId?: string;
 	isDraftFolder: boolean;
+	isSnoozedFolder?: boolean;
+	isScheduledFolder?: boolean;
 	isSending: boolean;
 	moveToFolders: Folder[];
+	labels?: Label[];
 	lastReceivedMessage?: Email;
 	onBack: () => void;
 	onSendDraft: () => void;
@@ -37,16 +44,44 @@ interface EmailPanelToolbarProps {
 	onToggleStar: () => void;
 	onToggleRead: () => void;
 	onMove: (folderId: string) => void;
+	onSnooze?: (until: string) => void;
+	onUnsnooze?: () => void;
+	onUnschedule?: () => void;
+	onToggleLabel?: (labelId: string, active: boolean) => void;
 	onViewSource: () => void;
 	onDelete: () => void;
+}
+
+/** Preset snooze targets, computed at click time. */
+function snoozePresets(): { label: string; date: Date }[] {
+	const now = new Date();
+	const laterToday = new Date(now.getTime() + 3 * 60 * 60 * 1000);
+	const tomorrow = new Date(now);
+	tomorrow.setDate(tomorrow.getDate() + 1);
+	tomorrow.setHours(8, 0, 0, 0);
+	const weekend = new Date(now);
+	weekend.setDate(weekend.getDate() + ((6 - weekend.getDay() + 7) % 7 || 7));
+	weekend.setHours(8, 0, 0, 0);
+	const nextWeek = new Date(now);
+	nextWeek.setDate(nextWeek.getDate() + ((1 - nextWeek.getDay() + 7) % 7 || 7));
+	nextWeek.setHours(8, 0, 0, 0);
+	return [
+		{ label: "Later today (3 hours)", date: laterToday },
+		{ label: "Tomorrow morning", date: tomorrow },
+		{ label: "This weekend", date: weekend },
+		{ label: "Next week", date: nextWeek },
+	];
 }
 
 export default function EmailPanelToolbar({
 	email,
 	mailboxId,
 	isDraftFolder,
+	isSnoozedFolder,
+	isScheduledFolder,
 	isSending,
 	moveToFolders,
+	labels = [],
 	onBack,
 	onSendDraft,
 	onEditDraft,
@@ -56,6 +91,10 @@ export default function EmailPanelToolbar({
 	onToggleStar,
 	onToggleRead,
 	onMove,
+	onSnooze,
+	onUnsnooze,
+	onUnschedule,
+	onToggleLabel,
 	onViewSource,
 	onDelete,
 }: EmailPanelToolbarProps) {
@@ -158,6 +197,40 @@ export default function EmailPanelToolbar({
 
 			<MoveToFolderMenu folders={moveToFolders} onMove={onMove} />
 
+			{isSnoozedFolder && onUnsnooze ? (
+				<Tooltip content="Unsnooze — return to inbox now" side="bottom" asChild>
+					<Button
+						variant="ghost"
+						shape="square"
+						size="sm"
+						icon={<BellSimpleSlashIcon size={18} />}
+						onClick={onUnsnooze}
+						aria-label="Unsnooze"
+					/>
+				</Tooltip>
+			) : isScheduledFolder && onUnschedule ? (
+				<Tooltip content="Cancel scheduled send — back to drafts" side="bottom" asChild>
+					<Button
+						variant="ghost"
+						shape="square"
+						size="sm"
+						icon={<XIcon size={18} />}
+						onClick={onUnschedule}
+						aria-label="Cancel scheduled send"
+					/>
+				</Tooltip>
+			) : (
+				!isDraftFolder && onSnooze && <SnoozeMenu onSnooze={onSnooze} />
+			)}
+
+			{onToggleLabel && (
+				<LabelMenu
+					labels={labels}
+					emailLabels={email.labels || []}
+					onToggle={onToggleLabel}
+				/>
+			)}
+
 			<div className="ml-auto flex items-center gap-0.5">
 				<Tooltip content="View source" side="bottom" asChild>
 					<Button
@@ -191,6 +264,141 @@ export default function EmailPanelToolbar({
 					/>
 				</Tooltip>
 			</div>
+		</div>
+	);
+}
+
+function SnoozeMenu({ onSnooze }: { onSnooze: (until: string) => void }) {
+	const [open, setOpen] = useState(false);
+	const [customValue, setCustomValue] = useState("");
+	const ref = useRef<HTMLDivElement>(null);
+
+	useEffect(() => {
+		if (!open) return;
+		const handler = (e: MouseEvent) => {
+			if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+		};
+		document.addEventListener("mousedown", handler);
+		return () => document.removeEventListener("mousedown", handler);
+	}, [open]);
+
+	const formatPreset = (d: Date) =>
+		d.toLocaleString(undefined, { weekday: "short", hour: "numeric", minute: "2-digit" });
+
+	return (
+		<div ref={ref} className="relative">
+			<Tooltip content="Snooze" side="bottom" asChild>
+				<Button
+					variant="ghost"
+					shape="square"
+					size="sm"
+					icon={<ClockIcon size={18} />}
+					onClick={() => setOpen((o) => !o)}
+					aria-label="Snooze"
+				/>
+			</Tooltip>
+			{open && (
+				<div className="absolute top-full left-0 z-50 mt-1 min-w-[220px] rounded-lg border border-kumo-line bg-kumo-elevated shadow-lg py-1">
+					<div className="px-3 py-1.5 text-xs font-medium text-kumo-subtle">Snooze until</div>
+					<div className="h-px bg-kumo-line my-1" />
+					{snoozePresets().map((preset) => (
+						<button
+							key={preset.label}
+							type="button"
+							className="w-full text-left px-3 py-1.5 text-sm text-kumo-default hover:bg-kumo-overlay transition-colors flex justify-between gap-3"
+							onClick={() => { onSnooze(preset.date.toISOString()); setOpen(false); }}
+						>
+							<span>{preset.label}</span>
+							<span className="text-kumo-subtle text-xs self-center">{formatPreset(preset.date)}</span>
+						</button>
+					))}
+					<div className="h-px bg-kumo-line my-1" />
+					<div className="px-3 py-1.5 flex items-center gap-2">
+						<input
+							type="datetime-local"
+							value={customValue}
+							onChange={(e) => setCustomValue(e.target.value)}
+							className="flex-1 text-xs rounded border border-kumo-line bg-kumo-recessed px-1.5 py-1 text-kumo-default"
+						/>
+						<Button
+							variant="secondary"
+							size="xs"
+							disabled={!customValue || new Date(customValue).getTime() <= Date.now()}
+							onClick={() => {
+								onSnooze(new Date(customValue).toISOString());
+								setOpen(false);
+								setCustomValue("");
+							}}
+						>
+							Set
+						</Button>
+					</div>
+				</div>
+			)}
+		</div>
+	);
+}
+
+function LabelMenu({
+	labels,
+	emailLabels,
+	onToggle,
+}: {
+	labels: Label[];
+	emailLabels: Label[];
+	onToggle: (labelId: string, active: boolean) => void;
+}) {
+	const [open, setOpen] = useState(false);
+	const ref = useRef<HTMLDivElement>(null);
+	const activeIds = new Set(emailLabels.map((l) => l.id));
+
+	useEffect(() => {
+		if (!open) return;
+		const handler = (e: MouseEvent) => {
+			if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+		};
+		document.addEventListener("mousedown", handler);
+		return () => document.removeEventListener("mousedown", handler);
+	}, [open]);
+
+	return (
+		<div ref={ref} className="relative">
+			<Tooltip content="Labels" side="bottom" asChild>
+				<Button
+					variant="ghost"
+					shape="square"
+					size="sm"
+					icon={<TagIcon size={18} />}
+					onClick={() => setOpen((o) => !o)}
+					aria-label="Labels"
+				/>
+			</Tooltip>
+			{open && (
+				<div className="absolute top-full left-0 z-50 mt-1 min-w-[180px] rounded-lg border border-kumo-line bg-kumo-elevated shadow-lg py-1">
+					<div className="px-3 py-1.5 text-xs font-medium text-kumo-subtle">Labels</div>
+					<div className="h-px bg-kumo-line my-1" />
+					{labels.length === 0 && (
+						<div className="px-3 py-1.5 text-sm text-kumo-subtle">
+							No labels yet — create one from the sidebar.
+						</div>
+					)}
+					{labels.map((label) => {
+						const active = activeIds.has(label.id);
+						return (
+							<button
+								key={label.id}
+								type="button"
+								className="w-full text-left px-3 py-1.5 text-sm text-kumo-default hover:bg-kumo-overlay transition-colors flex items-center gap-2"
+								onClick={() => onToggle(label.id, active)}
+							>
+								<TagIcon size={14} weight="fill" style={{ color: label.color }} />
+								<span className="flex-1 truncate">{label.name}</span>
+								{active && <CheckIcon size={14} className="text-kumo-subtle" />}
+							</button>
+						);
+					})}
+				</div>
+			)}
 		</div>
 	);
 }

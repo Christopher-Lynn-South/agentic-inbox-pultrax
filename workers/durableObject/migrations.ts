@@ -168,4 +168,60 @@ export const mailboxMigrations: Migration[] = [
             CREATE INDEX IF NOT EXISTS idx_emails_folder_date ON emails(folder_id, date DESC);
         `,
 	},
+	{
+		name: "9_snooze_schedule_labels_templates_rules_contacts",
+		sql: txn(`
+            ALTER TABLE emails ADD COLUMN snoozed_until TEXT;
+            ALTER TABLE emails ADD COLUMN scheduled_at TEXT;
+
+            INSERT OR IGNORE INTO folders (id, name, is_deletable) VALUES
+                ('snoozed', 'Snoozed', 0),
+                ('scheduled', 'Scheduled', 0);
+
+            CREATE TABLE labels (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE,
+                color TEXT NOT NULL DEFAULT '#8eaa92'
+            );
+
+            CREATE TABLE email_labels (
+                email_id TEXT NOT NULL,
+                label_id TEXT NOT NULL,
+                PRIMARY KEY (email_id, label_id),
+                FOREIGN KEY(email_id) REFERENCES emails(id) ON DELETE CASCADE,
+                FOREIGN KEY(label_id) REFERENCES labels(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE templates (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                subject TEXT,
+                body TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE rules (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                field TEXT NOT NULL,
+                pattern TEXT NOT NULL,
+                action TEXT NOT NULL,
+                action_value TEXT,
+                position INTEGER NOT NULL DEFAULT 0
+            );
+
+            CREATE TABLE contacts (
+                email TEXT PRIMARY KEY,
+                name TEXT,
+                last_seen TEXT,
+                times_seen INTEGER NOT NULL DEFAULT 1
+            );
+
+            CREATE INDEX idx_emails_snoozed_until ON emails(snoozed_until);
+            CREATE INDEX idx_emails_scheduled_at ON emails(scheduled_at);
+            CREATE INDEX idx_email_labels_label ON email_labels(label_id);
+        `),
+	},
 ];

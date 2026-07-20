@@ -42,6 +42,34 @@ const DraftBody = z.object({
 	draft_id: z.string().optional(),
 });
 
+const SnoozeBody = z.object({
+	until: z.string().min(1),
+});
+
+const ScheduleBody = z.object({
+	sendAt: z.string().min(1),
+});
+
+const LabelBody = z.object({
+	name: z.string().min(1),
+	color: z.string().optional(),
+});
+
+const TemplateBody = z.object({
+	name: z.string().min(1),
+	subject: z.string().optional(),
+	body: z.string(),
+});
+
+const RuleBody = z.object({
+	name: z.string().min(1),
+	field: z.enum(["sender", "recipient", "subject", "body", "any"]),
+	pattern: z.string().min(1),
+	action: z.enum(["move", "label", "star", "mark_read"]),
+	action_value: z.string().optional(),
+	enabled: z.boolean().optional(),
+});
+
 // -- Helpers --------------------------------------------------------
 
 function slugify(text: string) { // can return "" for non-alphanumeric input
@@ -266,6 +294,119 @@ app.post("/api/v1/mailboxes/:mailboxId/threads/:threadId/read", async (c: AppCon
 	return c.json({ status: "marked_read" });
 });
 
+// -- Snooze / Scheduled send ----------------------------------------
+
+app.post("/api/v1/mailboxes/:mailboxId/emails/:id/snooze", async (c: AppContext) => {
+	const { until } = SnoozeBody.parse(await c.req.json());
+	if (Number.isNaN(new Date(until).getTime())) return c.json({ error: "Invalid snooze time" }, 400);
+	const result = await (c.var.mailboxStub as any).snoozeEmail(c.req.param("id")!, until);
+	return result ? c.json(result) : c.json({ error: "Email not found" }, 404);
+});
+
+app.post("/api/v1/mailboxes/:mailboxId/emails/:id/unsnooze", async (c: AppContext) => {
+	const result = await (c.var.mailboxStub as any).unsnoozeEmail(c.req.param("id")!);
+	return result ? c.json(result) : c.json({ error: "Email not found or not snoozed" }, 404);
+});
+
+app.post("/api/v1/mailboxes/:mailboxId/emails/:id/schedule", async (c: AppContext) => {
+	const { sendAt } = ScheduleBody.parse(await c.req.json());
+	if (Number.isNaN(new Date(sendAt).getTime())) return c.json({ error: "Invalid send time" }, 400);
+	if (new Date(sendAt).getTime() <= Date.now()) return c.json({ error: "Send time must be in the future" }, 400);
+	const result = await (c.var.mailboxStub as any).scheduleEmail(c.req.param("id")!, sendAt);
+	if (result?.error) return c.json(result, 400);
+	return c.json(result);
+});
+
+app.post("/api/v1/mailboxes/:mailboxId/emails/:id/unschedule", async (c: AppContext) => {
+	const result = await (c.var.mailboxStub as any).cancelScheduledEmail(c.req.param("id")!);
+	return result ? c.json(result) : c.json({ error: "Email not found or not scheduled" }, 404);
+});
+
+// -- Labels ---------------------------------------------------------
+
+app.get("/api/v1/mailboxes/:mailboxId/labels", async (c: AppContext) =>
+	c.json(await (c.var.mailboxStub as any).getLabels()));
+
+app.post("/api/v1/mailboxes/:mailboxId/labels", async (c: AppContext) => {
+	const { name, color } = LabelBody.parse(await c.req.json());
+	const label = await (c.var.mailboxStub as any).createLabel(name, color);
+	return label ? c.json(label, 201) : c.json({ error: "Label with this name already exists" }, 409);
+});
+
+app.put("/api/v1/mailboxes/:mailboxId/labels/:id", async (c: AppContext) => {
+	const { name, color } = (await c.req.json()) as { name?: string; color?: string };
+	const label = await (c.var.mailboxStub as any).updateLabel(c.req.param("id")!, { name, color });
+	return label ? c.json(label) : c.json({ error: "Label not found" }, 404);
+});
+
+app.delete("/api/v1/mailboxes/:mailboxId/labels/:id", async (c: AppContext) => {
+	const ok = await (c.var.mailboxStub as any).deleteLabel(c.req.param("id")!);
+	return ok ? c.body(null, 204) : c.json({ error: "Label not found" }, 404);
+});
+
+app.post("/api/v1/mailboxes/:mailboxId/emails/:id/labels", async (c: AppContext) => {
+	const { labelId } = (await c.req.json()) as { labelId: string };
+	if (!labelId) return c.json({ error: "labelId is required" }, 400);
+	const result = await (c.var.mailboxStub as any).addLabelToEmail(c.req.param("id")!, labelId);
+	if (result?.error) return c.json(result, 404);
+	return c.json(result);
+});
+
+app.delete("/api/v1/mailboxes/:mailboxId/emails/:id/labels/:labelId", async (c: AppContext) => {
+	const result = await (c.var.mailboxStub as any).removeLabelFromEmail(c.req.param("id")!, c.req.param("labelId")!);
+	return c.json(result);
+});
+
+// -- Templates ------------------------------------------------------
+
+app.get("/api/v1/mailboxes/:mailboxId/templates", async (c: AppContext) =>
+	c.json(await (c.var.mailboxStub as any).getTemplates()));
+
+app.post("/api/v1/mailboxes/:mailboxId/templates", async (c: AppContext) => {
+	const data = TemplateBody.parse(await c.req.json());
+	return c.json(await (c.var.mailboxStub as any).createTemplate(data), 201);
+});
+
+app.put("/api/v1/mailboxes/:mailboxId/templates/:id", async (c: AppContext) => {
+	const data = (await c.req.json()) as { name?: string; subject?: string; body?: string };
+	const t = await (c.var.mailboxStub as any).updateTemplate(c.req.param("id")!, data);
+	return t ? c.json(t) : c.json({ error: "Template not found" }, 404);
+});
+
+app.delete("/api/v1/mailboxes/:mailboxId/templates/:id", async (c: AppContext) => {
+	const ok = await (c.var.mailboxStub as any).deleteTemplate(c.req.param("id")!);
+	return ok ? c.body(null, 204) : c.json({ error: "Template not found" }, 404);
+});
+
+// -- Rules ----------------------------------------------------------
+
+app.get("/api/v1/mailboxes/:mailboxId/rules", async (c: AppContext) =>
+	c.json(await (c.var.mailboxStub as any).getRules()));
+
+app.post("/api/v1/mailboxes/:mailboxId/rules", async (c: AppContext) => {
+	const data = RuleBody.parse(await c.req.json());
+	return c.json(await (c.var.mailboxStub as any).createRule(data), 201);
+});
+
+app.put("/api/v1/mailboxes/:mailboxId/rules/:id", async (c: AppContext) => {
+	const data = (await c.req.json()) as Record<string, unknown>;
+	const r = await (c.var.mailboxStub as any).updateRule(c.req.param("id")!, data);
+	return r ? c.json(r) : c.json({ error: "Rule not found" }, 404);
+});
+
+app.delete("/api/v1/mailboxes/:mailboxId/rules/:id", async (c: AppContext) => {
+	const ok = await (c.var.mailboxStub as any).deleteRule(c.req.param("id")!);
+	return ok ? c.body(null, 204) : c.json({ error: "Rule not found" }, 404);
+});
+
+// -- Contacts -------------------------------------------------------
+
+app.get("/api/v1/mailboxes/:mailboxId/contacts", async (c: AppContext) => {
+	const query = c.req.query("query") || undefined;
+	const limit = intQuery(c, "limit");
+	return c.json(await (c.var.mailboxStub as any).getContacts({ query, limit }));
+});
+
 // -- Reply / Forward ------------------------------------------------
 
 app.post("/api/v1/mailboxes/:mailboxId/emails/:id/reply", handleReplyEmail);
@@ -302,6 +443,7 @@ app.get("/api/v1/mailboxes/:mailboxId/search", async (c: AppContext) => {
 		to: c.req.query("to"), subject: c.req.query("subject"), date_start: c.req.query("date_start"),
 		date_end: c.req.query("date_end"), is_read: boolQuery(c, "is_read"),
 		is_starred: boolQuery(c, "is_starred"), has_attachment: boolQuery(c, "has_attachment"),
+		label: c.req.query("label"),
 	};
 	const stub = c.var.mailboxStub as any;
 	const emails = await stub.searchEmails({ ...searchOpts, page: intQuery(c, "page"), limit: intQuery(c, "limit") });
@@ -392,9 +534,11 @@ async function receiveEmail(event: { raw: ReadableStream; rawSize: number }, env
 
 	const originalMessageId = parsedEmail.messageId ? extractMsgId(parsedEmail.messageId) : null;
 
+	const senderAddress = (parsedEmail.from?.address || "").toLowerCase();
+
 	await stub.createEmail(Folders.INBOX, {
 		id: messageId, subject: parsedEmail.subject || "",
-		sender: (parsedEmail.from?.address || "").toLowerCase(), recipient: allRecipients.join(", "),
+		sender: senderAddress, recipient: allRecipients.join(", "),
 		cc: ccRecipients.join(", ") || null, bcc: bccRecipients.join(", ") || null,
 		date: new Date().toISOString(), // uses receive time, not the email's Date header
 		body: parsedEmail.html || parsedEmail.text || "",
@@ -402,11 +546,82 @@ async function receiveEmail(event: { raw: ReadableStream; rawSize: number }, env
 		thread_id: threadId, message_id: originalMessageId, raw_headers: JSON.stringify(parsedEmail.headers),
 	}, attachmentData);
 
-	const agentStub = env.EMAIL_AGENT.get(env.EMAIL_AGENT.idFromName(mailboxId));
-	ctx.waitUntil(agentStub.fetch(new Request("https://agents/onNewEmail", {
-		method: "POST", headers: { "Content-Type": "application/json" },
-		body: JSON.stringify({ mailboxId, emailId: messageId, sender: (parsedEmail.from?.address || "").toLowerCase(), subject: parsedEmail.subject || "", threadId }),
-	})).catch((e) => console.error("Auto-draft trigger failed:", (e as Error).message)));
+	// Apply the mailbox's inbox rules (move/label/star/mark-read).
+	let finalFolder: string | null = Folders.INBOX;
+	try {
+		finalFolder = await (stub as any).applyRulesToEmail(messageId);
+	} catch (e) {
+		console.error("Rule application failed:", (e as Error).message);
+	}
+
+	// Auto-reply, if enabled for this mailbox. Guarded against mail loops:
+	// never reply to automated senders, and at most one auto-reply per
+	// sender per 24 hours.
+	ctx.waitUntil(
+		maybeSendAutoReply(env, stub, mailboxId, senderAddress, parsedEmail.subject || "")
+			.catch((e) => console.error("Auto-reply failed:", (e as Error).message)),
+	);
+
+	// Only trigger AI auto-draft for emails that remain in the inbox —
+	// a rule that files something to spam/trash/archive has decided it
+	// doesn't need a reply.
+	if (finalFolder === Folders.INBOX || finalFolder === null) {
+		const agentStub = env.EMAIL_AGENT.get(env.EMAIL_AGENT.idFromName(mailboxId));
+		ctx.waitUntil(agentStub.fetch(new Request("https://agents/onNewEmail", {
+			method: "POST", headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ mailboxId, emailId: messageId, sender: senderAddress, subject: parsedEmail.subject || "", threadId }),
+		})).catch((e) => console.error("Auto-draft trigger failed:", (e as Error).message)));
+	}
+}
+
+/** Sender patterns that must never receive an auto-reply (loop prevention). */
+const AUTO_REPLY_BLOCKLIST = /(^|[.@_-])(no-?reply|mailer-daemon|postmaster|bounce|notifications?|do-?not-?reply)([.@_-]|$)/i;
+
+async function maybeSendAutoReply(
+	env: Env,
+	stub: ReturnType<Env["MAILBOX"]["get"]>,
+	mailboxId: string,
+	senderAddress: string,
+	incomingSubject: string,
+) {
+	if (!senderAddress || senderAddress === mailboxId) return;
+	if (AUTO_REPLY_BLOCKLIST.test(senderAddress)) return;
+
+	const settingsObj = await env.BUCKET.get(`mailboxes/${mailboxId}.json`);
+	if (!settingsObj) return;
+	const settings = await settingsObj.json<{ autoReply?: { enabled?: boolean; subject?: string; message?: string } }>();
+	const autoReply = settings.autoReply;
+	if (!autoReply?.enabled || !autoReply.message) return;
+
+	// At most one auto-reply per sender per 24h.
+	const dayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+	const recentCount = await (stub as any).countSearchResults({
+		query: "", to: senderAddress, folder: Folders.SENT,
+		subject: autoReply.subject || "Auto-reply", date_start: dayAgo,
+	});
+	if (recentCount > 0) return;
+
+	const rateLimitError = await (stub as any).checkSendRateLimit();
+	if (rateLimitError) return;
+
+	const subject = autoReply.subject || `Auto-reply: ${incomingSubject}`.slice(0, 200);
+	const html = autoReply.message.replace(/\n/g, "<br>");
+	await sendEmail(env.EMAIL, {
+		to: senderAddress,
+		from: mailboxId,
+		subject,
+		html,
+		headers: { "Auto-Submitted": "auto-replied", "X-Auto-Response-Suppress": "All" },
+	});
+
+	const fromDomain = mailboxId.split("@")[1] || "local";
+	const { messageId, outgoingMessageId } = generateMessageId(fromDomain);
+	await stub.createEmail(Folders.SENT, {
+		id: messageId, subject, sender: mailboxId, recipient: senderAddress,
+		date: new Date().toISOString(), body: html,
+		in_reply_to: null, email_references: null, thread_id: messageId,
+		message_id: outgoingMessageId,
+	}, []);
 }
 
 export { app, receiveEmail };

@@ -325,6 +325,82 @@ export async function toolUpdateDraft(
 	};
 }
 
+// ── star_email ─────────────────────────────────────────────────────
+
+export async function toolStarEmail(
+	env: Env,
+	mailboxId: string,
+	emailId: string,
+	starred: boolean,
+) {
+	const stub = getMailboxStub(env, mailboxId);
+	await stub.updateEmail(emailId, { starred });
+	return { status: "updated", emailId, starred };
+}
+
+// ── snooze_email ───────────────────────────────────────────────────
+
+export async function toolSnoozeEmail(
+	env: Env,
+	mailboxId: string,
+	emailId: string,
+	until: string,
+) {
+	if (Number.isNaN(new Date(until).getTime())) {
+		return { error: `Invalid snooze time: ${until}. Use an ISO 8601 timestamp.` };
+	}
+	const stub = getMailboxStub(env, mailboxId);
+	const result = await (stub as any).snoozeEmail(emailId, until);
+	if (!result) return { error: "Email not found" };
+	return { status: "snoozed", emailId, until };
+}
+
+// ── labels ─────────────────────────────────────────────────────────
+
+export async function toolListLabels(env: Env, mailboxId: string) {
+	const stub = getMailboxStub(env, mailboxId);
+	return (stub as any).getLabels();
+}
+
+export async function toolLabelEmail(
+	env: Env,
+	mailboxId: string,
+	emailId: string,
+	labelName: string,
+	remove: boolean,
+) {
+	const stub = getMailboxStub(env, mailboxId);
+	if (remove) {
+		return (stub as any).removeLabelFromEmail(emailId, labelName);
+	}
+	// Create the label on the fly if it doesn't exist yet.
+	const result = await (stub as any).addLabelToEmail(emailId, labelName);
+	if (result?.error === "Label not found") {
+		await (stub as any).createLabel(labelName);
+		return (stub as any).addLabelToEmail(emailId, labelName);
+	}
+	return result;
+}
+
+// ── templates ──────────────────────────────────────────────────────
+
+export async function toolListTemplates(env: Env, mailboxId: string) {
+	const stub = getMailboxStub(env, mailboxId);
+	return (stub as any).getTemplates();
+}
+
+// ── contacts ───────────────────────────────────────────────────────
+
+export async function toolSearchContacts(
+	env: Env,
+	mailboxId: string,
+	query?: string,
+	limit?: number,
+) {
+	const stub = getMailboxStub(env, mailboxId);
+	return (stub as any).getContacts({ query, limit });
+}
+
 // ── mark_email_read ────────────────────────────────────────────────
 
 export async function toolMarkEmailRead(

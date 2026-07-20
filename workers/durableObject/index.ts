@@ -7,6 +7,7 @@ import { drizzle } from "drizzle-orm/durable-sqlite";
 import { eq, and, or, asc, desc, sql } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 import * as schema from "../db/schema";
+import { sendEmail } from "../email-sender";
 import { Folders } from "../../shared/folders";
 import type { Env } from "../types";
 import { applyMigrations, mailboxMigrations } from "./migrations";
@@ -60,6 +61,18 @@ interface SearchFilterOptions {
 	is_read?: boolean;
 	is_starred?: boolean;
 	has_attachment?: boolean;
+	label?: string;
+}
+
+interface RuleData {
+	id: string;
+	name: string;
+	enabled: number;
+	field: string;
+	pattern: string;
+	action: string;
+	action_value: string | null;
+	position: number;
 }
 
 interface GetEmailsOptions {
@@ -160,6 +173,8 @@ export class MailboxDO extends DurableObject<Env> {
 				email_references: schema.emails.email_references,
 				thread_id: schema.emails.thread_id,
 				folder_id: schema.emails.folder_id,
+				snoozed_until: schema.emails.snoozed_until,
+				scheduled_at: schema.emails.scheduled_at,
 				snippet: sql<string>`SUBSTR(${schema.emails.body}, 1, 300)`,
 			})
 			.from(schema.emails)
@@ -451,11 +466,23 @@ export class MailboxDO extends DurableObject<Env> {
 			.where(eq(schema.attachments.email_id, id))
 			.all();
 
+		const emailLabelRows = this.db
+			.select({
+				id: schema.labels.id,
+				name: schema.labels.name,
+				color: schema.labels.color,
+			})
+			.from(schema.emailLabels)
+			.innerJoin(schema.labels, eq(schema.emailLabels.label_id, schema.labels.id))
+			.where(eq(schema.emailLabels.email_id, id))
+			.all();
+
 		return {
 			...email,
 			read: !!email.read,
 			starred: !!email.starred,
 			attachments: emailAttachments,
+			labels: emailLabelRows,
 		};
 	}
 
@@ -659,7 +686,7 @@ export class MailboxDO extends DurableObject<Env> {
 		options: SearchFilterOptions,
 		tableAlias = "",
 	): { conditions: string[]; params: (string | number)[] } {
-		const { query, folder, from, to, subject, date_start, date_end, is_read, is_starred, has_attachment } = options;
+		const { query, folder, from, to, subject, date_start, date_end, is_read, is_starred, has_attachment, label } = options;
 		const prefix = tableAlias ? `${tableAlias}.` : "";
 		const conditions: string[] = [];
 		const params: (string | number)[] = [];
@@ -690,6 +717,10 @@ export class MailboxDO extends DurableObject<Env> {
 		if (is_read !== undefined) { const p = addParam(is_read ? 1 : 0); conditions.push(`${prefix}read = ${p}`); }
 		if (is_starred !== undefined) { const p = addParam(is_starred ? 1 : 0); conditions.push(`${prefix}starred = ${p}`); }
 		if (has_attachment) { conditions.push(`${prefix}id IN (SELECT DISTINCT email_id FROM attachments)`); }
+		if (label) {
+			const p = addParam(label);
+			conditions.push(`${prefix}id IN (SELECT email_id FROM email_labels el JOIN labels l ON el.label_id = l.id WHERE l.id = ${p} OR l.name = ${p})`);
+		}
 
 		return { conditions, params };
 	}
@@ -868,5 +899,594 @@ export class MailboxDO extends DurableObject<Env> {
 		if (attachments.length > 0) {
 			this.db.insert(schema.attachments).values(attachments).run();
 		}
+
+		// Auto-collect contacts: senders of received mail, recipients of sent mail.
+		try {
+			if (folderId === Folders.INBOX && email.sender) {
+				this.recordContact(email.sender);
+			} else if (folderId === Folders.SENT) {
+				for (const addr of (email.recipient || "").split(",")) {
+					this.recordContact(addr);
+				}
+			}
+		} catch (e) {
+			console.warn("Contact collection failed:", (e as Error).message);
+		}
+	}
+
+	// ── Snooze ─────────────────────────────────────────────────────
+
+	/**
+	 * Snooze an email: hide it in the Snoozed folder until `until`,
+	 * at which point the alarm moves it back to the inbox as unread.
+	 */
+	async snoozeEmail(id: string, until: string) {
+		const email = this.db
+			.select({ id: schema.emails.id })
+			.from(schema.emails)
+			.where(eq(schema.emails.id, id))
+			.get();
+		if (!email) return null;
+
+		if (Number.isNaN(new Date(until).getTime())) {
+			throw new Error(`Invalid snooze time: ${until}`);
+		}
+
+		this.db
+			.update(schema.emails)
+			.set({ folder_id: Folders.SNOOZED, snoozed_until: until })
+			.where(eq(schema.emails.id, id))
+			.run();
+
+		await this.scheduleNextAlarm();
+		return { id, snoozed_until: until };
+	}
+
+	/** Un-snooze an email immediately, returning it to the inbox. */
+	async unsnoozeEmail(id: string) {
+		const email = this.db
+			.select({ id: schema.emails.id, folder_id: schema.emails.folder_id })
+			.from(schema.emails)
+			.where(eq(schema.emails.id, id))
+			.get();
+		if (!email || email.folder_id !== Folders.SNOOZED) return null;
+
+		this.db
+			.update(schema.emails)
+			.set({ folder_id: Folders.INBOX, snoozed_until: null })
+			.where(eq(schema.emails.id, id))
+			.run();
+
+		await this.scheduleNextAlarm();
+		return { id, status: "unsnoozed" };
+	}
+
+	// ── Scheduled send ─────────────────────────────────────────────
+
+	/**
+	 * Schedule a draft to be sent later. Moves the draft into the
+	 * Scheduled folder; the alarm delivers it at `sendAt`.
+	 */
+	async scheduleEmail(id: string, sendAt: string) {
+		const email = this.db
+			.select({
+				id: schema.emails.id,
+				folder_id: schema.emails.folder_id,
+				recipient: schema.emails.recipient,
+			})
+			.from(schema.emails)
+			.where(eq(schema.emails.id, id))
+			.get();
+		if (!email) return { error: "Email not found" };
+		if (email.folder_id !== Folders.DRAFT) {
+			return { error: "Only drafts can be scheduled" };
+		}
+		if (!email.recipient) {
+			return { error: "Draft has no recipient" };
+		}
+		if (Number.isNaN(new Date(sendAt).getTime())) {
+			return { error: `Invalid send time: ${sendAt}` };
+		}
+
+		this.db
+			.update(schema.emails)
+			.set({ folder_id: Folders.SCHEDULED, scheduled_at: sendAt })
+			.where(eq(schema.emails.id, id))
+			.run();
+
+		await this.scheduleNextAlarm();
+		return { id, scheduled_at: sendAt, status: "scheduled" };
+	}
+
+	/** Cancel a scheduled send, returning the email to Drafts. */
+	async cancelScheduledEmail(id: string) {
+		const email = this.db
+			.select({ id: schema.emails.id, folder_id: schema.emails.folder_id })
+			.from(schema.emails)
+			.where(eq(schema.emails.id, id))
+			.get();
+		if (!email || email.folder_id !== Folders.SCHEDULED) return null;
+
+		this.db
+			.update(schema.emails)
+			.set({ folder_id: Folders.DRAFT, scheduled_at: null })
+			.where(eq(schema.emails.id, id))
+			.run();
+
+		await this.scheduleNextAlarm();
+		return { id, status: "unscheduled" };
+	}
+
+	// ── Alarm: wake snoozed emails, deliver scheduled sends ────────
+
+	/**
+	 * Set the DO alarm to the earliest pending snooze wake-up or
+	 * scheduled send. Public so API routes can trigger a re-scan,
+	 * but primarily called internally after state changes.
+	 */
+	async scheduleNextAlarm() {
+		const row = [
+			...this.ctx.storage.sql.exec(
+				`SELECT MIN(t) as next FROM (
+					SELECT MIN(snoozed_until) as t FROM emails
+						WHERE folder_id = ?1 AND snoozed_until IS NOT NULL
+					UNION ALL
+					SELECT MIN(scheduled_at) as t FROM emails
+						WHERE folder_id = ?2 AND scheduled_at IS NOT NULL
+				) WHERE t IS NOT NULL`,
+				Folders.SNOOZED,
+				Folders.SCHEDULED,
+			),
+		][0] as { next: string | null } | undefined;
+
+		const next = row?.next;
+		if (!next) {
+			await this.ctx.storage.deleteAlarm();
+			return;
+		}
+		const ts = new Date(next).getTime();
+		if (Number.isNaN(ts)) return;
+		// Never schedule in the past — fire almost immediately instead.
+		await this.ctx.storage.setAlarm(Math.max(ts, Date.now() + 1000));
+	}
+
+	async alarm() {
+		const nowIso = new Date().toISOString();
+
+		// 1. Wake snoozed emails whose time has come: back to inbox, unread
+		//    so they surface at the top of the list.
+		this.ctx.storage.sql.exec(
+			`UPDATE emails SET folder_id = ?1, snoozed_until = NULL, read = 0
+			 WHERE folder_id = ?2 AND snoozed_until IS NOT NULL AND snoozed_until <= ?3`,
+			Folders.INBOX,
+			Folders.SNOOZED,
+			nowIso,
+		);
+
+		// 2. Deliver scheduled emails that are due.
+		const due = [
+			...this.ctx.storage.sql.exec(
+				`SELECT * FROM emails
+				 WHERE folder_id = ?1 AND scheduled_at IS NOT NULL AND scheduled_at <= ?2`,
+				Folders.SCHEDULED,
+				nowIso,
+			),
+		] as any[];
+
+		for (const email of due) {
+			try {
+				const toList = String(email.recipient || "")
+					.split(",")
+					.map((a: string) => a.trim())
+					.filter(Boolean);
+				const ccList = String(email.cc || "").split(",").map((a: string) => a.trim()).filter(Boolean);
+				const bccList = String(email.bcc || "").split(",").map((a: string) => a.trim()).filter(Boolean);
+
+				// Build threading headers if this is a scheduled reply.
+				let headers: Record<string, string> | undefined;
+				if (email.in_reply_to) {
+					const original = [
+						...this.ctx.storage.sql.exec(
+							`SELECT message_id FROM emails WHERE id = ?1`,
+							email.in_reply_to,
+						),
+					][0] as { message_id: string | null } | undefined;
+					if (original?.message_id) {
+						headers = {
+							"In-Reply-To": `<${original.message_id}>`,
+							References: `<${original.message_id}>`,
+						};
+					}
+				}
+
+				await sendEmail(this.env.EMAIL, {
+					to: toList.length === 1 ? toList[0] : toList,
+					from: email.sender,
+					subject: email.subject || "(no subject)",
+					html: email.body || "",
+					...(ccList.length > 0 ? { cc: ccList } : {}),
+					...(bccList.length > 0 ? { bcc: bccList } : {}),
+					...(headers ? { headers } : {}),
+				});
+
+				this.ctx.storage.sql.exec(
+					`UPDATE emails SET folder_id = ?1, scheduled_at = NULL, read = 1, date = ?2
+					 WHERE id = ?3`,
+					Folders.SENT,
+					new Date().toISOString(),
+					email.id,
+				);
+			} catch (e) {
+				console.error(
+					`Scheduled send failed for ${email.id}, returning to drafts:`,
+					(e as Error).message,
+				);
+				// Return to drafts so the email isn't stuck retrying forever.
+				this.ctx.storage.sql.exec(
+					`UPDATE emails SET folder_id = ?1, scheduled_at = NULL WHERE id = ?2`,
+					Folders.DRAFT,
+					email.id,
+				);
+			}
+		}
+
+		await this.scheduleNextAlarm();
+	}
+
+	// ── Labels ─────────────────────────────────────────────────────
+
+	async getLabels() {
+		const rows = [
+			...this.ctx.storage.sql.exec(
+				`SELECT l.id, l.name, l.color, COUNT(el.email_id) as email_count
+				 FROM labels l
+				 LEFT JOIN email_labels el ON el.label_id = l.id
+				 GROUP BY l.id, l.name, l.color
+				 ORDER BY l.name COLLATE NOCASE`,
+			),
+		];
+		return rows as { id: string; name: string; color: string; email_count: number }[];
+	}
+
+	async createLabel(name: string, color?: string) {
+		const trimmed = name.trim();
+		if (!trimmed) return null;
+		try {
+			const result = this.db
+				.insert(schema.labels)
+				.values({
+					id: crypto.randomUUID(),
+					name: trimmed,
+					color: color || "#8eaa92",
+				})
+				.returning()
+				.get();
+			return { ...result, email_count: 0 };
+		} catch (e: unknown) {
+			if (e instanceof Error && e.message.includes("UNIQUE constraint failed")) {
+				return null;
+			}
+			throw e;
+		}
+	}
+
+	async updateLabel(id: string, data: { name?: string; color?: string }) {
+		const set: { name?: string; color?: string } = {};
+		if (data.name?.trim()) set.name = data.name.trim();
+		if (data.color) set.color = data.color;
+		if (Object.keys(set).length === 0) return null;
+		return (
+			this.db
+				.update(schema.labels)
+				.set(set)
+				.where(eq(schema.labels.id, id))
+				.returning()
+				.get() ?? null
+		);
+	}
+
+	async deleteLabel(id: string) {
+		// email_labels rows cascade via FK
+		this.ctx.storage.sql.exec(`DELETE FROM email_labels WHERE label_id = ?1`, id);
+		const existing = this.db
+			.select({ id: schema.labels.id })
+			.from(schema.labels)
+			.where(eq(schema.labels.id, id))
+			.get();
+		if (!existing) return false;
+		this.db.delete(schema.labels).where(eq(schema.labels.id, id)).run();
+		return true;
+	}
+
+	async addLabelToEmail(emailId: string, labelId: string) {
+		const email = this.db
+			.select({ id: schema.emails.id })
+			.from(schema.emails)
+			.where(eq(schema.emails.id, emailId))
+			.get();
+		if (!email) return { error: "Email not found" };
+		const label = this.db
+			.select({ id: schema.labels.id })
+			.from(schema.labels)
+			.where(or(eq(schema.labels.id, labelId), eq(schema.labels.name, labelId)))
+			.get();
+		if (!label) return { error: "Label not found" };
+		this.ctx.storage.sql.exec(
+			`INSERT OR IGNORE INTO email_labels (email_id, label_id) VALUES (?1, ?2)`,
+			emailId,
+			label.id,
+		);
+		return { status: "labeled", emailId, labelId: label.id };
+	}
+
+	async removeLabelFromEmail(emailId: string, labelId: string) {
+		this.ctx.storage.sql.exec(
+			`DELETE FROM email_labels WHERE email_id = ?1 AND label_id IN (SELECT id FROM labels WHERE id = ?2 OR name = ?2)`,
+			emailId,
+			labelId,
+		);
+		return { status: "unlabeled", emailId, labelId };
+	}
+
+	// ── Templates ──────────────────────────────────────────────────
+
+	async getTemplates() {
+		return this.db
+			.select()
+			.from(schema.templates)
+			.orderBy(asc(schema.templates.name))
+			.all();
+	}
+
+	async createTemplate(data: { name: string; subject?: string; body: string }) {
+		const now = new Date().toISOString();
+		return this.db
+			.insert(schema.templates)
+			.values({
+				id: crypto.randomUUID(),
+				name: data.name.trim(),
+				subject: data.subject ?? null,
+				body: data.body,
+				created_at: now,
+				updated_at: now,
+			})
+			.returning()
+			.get();
+	}
+
+	async updateTemplate(
+		id: string,
+		data: { name?: string; subject?: string; body?: string },
+	) {
+		const set: Record<string, string> = { updated_at: new Date().toISOString() };
+		if (data.name?.trim()) set.name = data.name.trim();
+		if (data.subject !== undefined) set.subject = data.subject;
+		if (data.body !== undefined) set.body = data.body;
+		return (
+			this.db
+				.update(schema.templates)
+				.set(set)
+				.where(eq(schema.templates.id, id))
+				.returning()
+				.get() ?? null
+		);
+	}
+
+	async deleteTemplate(id: string) {
+		const existing = this.db
+			.select({ id: schema.templates.id })
+			.from(schema.templates)
+			.where(eq(schema.templates.id, id))
+			.get();
+		if (!existing) return false;
+		this.db.delete(schema.templates).where(eq(schema.templates.id, id)).run();
+		return true;
+	}
+
+	// ── Rules ──────────────────────────────────────────────────────
+
+	async getRules() {
+		return this.db
+			.select()
+			.from(schema.rules)
+			.orderBy(asc(schema.rules.position), asc(schema.rules.name))
+			.all();
+	}
+
+	async createRule(data: {
+		name: string;
+		field: string;
+		pattern: string;
+		action: string;
+		action_value?: string;
+		enabled?: boolean;
+	}) {
+		const maxRow = [
+			...this.ctx.storage.sql.exec(`SELECT COALESCE(MAX(position), 0) as p FROM rules`),
+		][0] as { p: number } | undefined;
+		return this.db
+			.insert(schema.rules)
+			.values({
+				id: crypto.randomUUID(),
+				name: data.name.trim(),
+				enabled: data.enabled === false ? 0 : 1,
+				field: data.field,
+				pattern: data.pattern,
+				action: data.action,
+				action_value: data.action_value ?? null,
+				position: (maxRow?.p ?? 0) + 1,
+			})
+			.returning()
+			.get();
+	}
+
+	async updateRule(
+		id: string,
+		data: {
+			name?: string;
+			field?: string;
+			pattern?: string;
+			action?: string;
+			action_value?: string | null;
+			enabled?: boolean;
+			position?: number;
+		},
+	) {
+		const set: Record<string, string | number | null> = {};
+		if (data.name?.trim()) set.name = data.name.trim();
+		if (data.field) set.field = data.field;
+		if (data.pattern) set.pattern = data.pattern;
+		if (data.action) set.action = data.action;
+		if (data.action_value !== undefined) set.action_value = data.action_value;
+		if (data.enabled !== undefined) set.enabled = data.enabled ? 1 : 0;
+		if (data.position !== undefined) set.position = data.position;
+		if (Object.keys(set).length === 0) return null;
+		return (
+			this.db
+				.update(schema.rules)
+				.set(set)
+				.where(eq(schema.rules.id, id))
+				.returning()
+				.get() ?? null
+		);
+	}
+
+	async deleteRule(id: string) {
+		const existing = this.db
+			.select({ id: schema.rules.id })
+			.from(schema.rules)
+			.where(eq(schema.rules.id, id))
+			.get();
+		if (!existing) return false;
+		this.db.delete(schema.rules).where(eq(schema.rules.id, id)).run();
+		return true;
+	}
+
+	/**
+	 * Apply enabled inbox rules to a freshly received email.
+	 *
+	 * Rules run in position order. Match is a case-insensitive substring
+	 * check of `pattern` against the chosen field. Supported actions:
+	 * move (action_value = folder id), label (action_value = label id/name),
+	 * star, mark_read. All matching rules apply; the first matching `move`
+	 * wins (later moves are ignored so rule order is meaningful).
+	 *
+	 * Returns the email's final folder_id so callers can decide whether
+	 * to trigger downstream automation (e.g. skip AI auto-draft for spam).
+	 */
+	async applyRulesToEmail(emailId: string): Promise<string | null> {
+		const email = [
+			...this.ctx.storage.sql.exec(`SELECT * FROM emails WHERE id = ?1`, emailId),
+		][0] as any;
+		if (!email) return null;
+
+		const allRules = (await this.getRules()) as RuleData[];
+		const active = allRules.filter((r) => r.enabled);
+		if (active.length === 0) return email.folder_id;
+
+		let finalFolder: string = email.folder_id;
+		let moved = false;
+
+		const fieldValue = (field: string): string => {
+			switch (field) {
+				case "sender": return String(email.sender || "");
+				case "recipient": return String(email.recipient || "");
+				case "subject": return String(email.subject || "");
+				case "body": return String(email.body || "");
+				default:
+					return [email.sender, email.recipient, email.subject, email.body]
+						.map((v) => String(v || ""))
+						.join("\n");
+			}
+		};
+
+		for (const rule of active) {
+			const haystack = fieldValue(rule.field).toLowerCase();
+			if (!haystack.includes(rule.pattern.toLowerCase())) continue;
+
+			switch (rule.action) {
+				case "move": {
+					if (moved || !rule.action_value) break;
+					const folder = this.db
+						.select({ id: schema.folders.id })
+						.from(schema.folders)
+						.where(
+							or(
+								eq(schema.folders.id, rule.action_value),
+								eq(schema.folders.name, rule.action_value),
+							),
+						)
+						.get();
+					if (folder) {
+						this.ctx.storage.sql.exec(
+							`UPDATE emails SET folder_id = ?1 WHERE id = ?2`,
+							folder.id,
+							emailId,
+						);
+						finalFolder = folder.id;
+						moved = true;
+					}
+					break;
+				}
+				case "label": {
+					if (rule.action_value) {
+						await this.addLabelToEmail(emailId, rule.action_value);
+					}
+					break;
+				}
+				case "star": {
+					this.ctx.storage.sql.exec(`UPDATE emails SET starred = 1 WHERE id = ?1`, emailId);
+					break;
+				}
+				case "mark_read": {
+					this.ctx.storage.sql.exec(`UPDATE emails SET read = 1 WHERE id = ?1`, emailId);
+					break;
+				}
+			}
+		}
+
+		return finalFolder;
+	}
+
+	// ── Contacts ───────────────────────────────────────────────────
+
+	/** Upsert a contact, bumping its seen-count. Synchronous helper. */
+	recordContact(rawEmail: string, name?: string) {
+		const email = rawEmail.trim().toLowerCase();
+		// Basic shape check — skip garbage and self-referential empties.
+		if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return;
+		this.ctx.storage.sql.exec(
+			`INSERT INTO contacts (email, name, last_seen, times_seen)
+			 VALUES (?1, ?2, ?3, 1)
+			 ON CONFLICT(email) DO UPDATE SET
+				times_seen = times_seen + 1,
+				last_seen = ?3,
+				name = COALESCE(excluded.name, contacts.name)`,
+			email,
+			name ?? null,
+			new Date().toISOString(),
+		);
+	}
+
+	async getContacts(options: { query?: string; limit?: number } = {}) {
+		const limit = Math.min(Math.max(options.limit ?? 25, 1), 100);
+		if (options.query) {
+			return [
+				...this.ctx.storage.sql.exec(
+					`SELECT email, name, last_seen, times_seen FROM contacts
+					 WHERE email LIKE ?1 OR name LIKE ?1
+					 ORDER BY times_seen DESC, last_seen DESC LIMIT ?2`,
+					`%${options.query}%`,
+					limit,
+				),
+			];
+		}
+		return [
+			...this.ctx.storage.sql.exec(
+				`SELECT email, name, last_seen, times_seen FROM contacts
+				 ORDER BY times_seen DESC, last_seen DESC LIMIT ?1`,
+				limit,
+			),
+		];
 	}
 }

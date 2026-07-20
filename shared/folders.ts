@@ -17,6 +17,8 @@ export const Folders = {
 	ARCHIVE: "archive",
 	TRASH: "trash",
 	SPAM: "spam",
+	SNOOZED: "snoozed",
+	SCHEDULED: "scheduled",
 } as const;
 
 export type FolderId = (typeof Folders)[keyof typeof Folders];
@@ -27,6 +29,8 @@ export type FolderId = (typeof Folders)[keyof typeof Folders];
  */
 export const SYSTEM_FOLDER_IDS: readonly FolderId[] = [
 	Folders.INBOX,
+	Folders.SNOOZED,
+	Folders.SCHEDULED,
 	Folders.SENT,
 	Folders.DRAFT,
 	Folders.ARCHIVE,
@@ -44,11 +48,13 @@ export const FOLDER_DISPLAY_NAMES: Record<string, string> = {
 	[Folders.ARCHIVE]: "Archive",
 	[Folders.TRASH]: "Trash",
 	[Folders.SPAM]: "Spam",
+	[Folders.SNOOZED]: "Snoozed",
+	[Folders.SCHEDULED]: "Scheduled",
 };
 
 /** Formatted string for tool parameter descriptions (agent + MCP). */
 export const FOLDER_TOOL_DESCRIPTION =
-	"Folder to list: inbox, sent, draft, archive, trash";
+	"Folder to list: inbox, sent, draft, archive, trash, snoozed, scheduled";
 
 /** Formatted string for move-email tool descriptions. */
 export const MOVE_FOLDER_TOOL_DESCRIPTION =

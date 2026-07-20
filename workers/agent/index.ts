@@ -28,6 +28,12 @@ import {
 	toolMarkEmailRead,
 	toolMoveEmail,
 	toolDiscardDraft,
+	toolStarEmail,
+	toolSnoozeEmail,
+	toolListLabels,
+	toolLabelEmail,
+	toolListTemplates,
+	toolSearchContacts,
 } from "../lib/tools";
 import { Folders, FOLDER_TOOL_DESCRIPTION, MOVE_FOLDER_TOOL_DESCRIPTION } from "../../shared/folders";
 import type { Env } from "../types";
@@ -85,7 +91,10 @@ You can ONLY draft emails. You do NOT have the ability to send emails directly.
 **Don't paste draft contents into the chat.** The drafts are saved via tools - the operator can see them in the Drafts folder. In your chat message, just briefly say what you drafted (e.g. "Drafted a reply to Tim"). Don't duplicate the full email body in the chat.
 
 ## Draft Management
-Use discard_draft to delete drafts that the operator rejects or that are no longer needed.`;
+Use discard_draft to delete drafts that the operator rejects or that are no longer needed.
+
+## Organization Tools
+When the operator asks, you can also: star_email to flag important emails, snooze_email to hide an email until a later time, label_email / list_labels to categorize emails, list_templates to reuse saved canned responses as the basis for drafts, and search_contacts to look up addresses the mailbox has corresponded with.`;
 
 /**
  * Fetch the custom system prompt for a mailbox from its R2 settings.
@@ -264,6 +273,81 @@ function createEmailTools(env: Env, mailboxId: string) {
 			}),
 			execute: async ({ draftId }): Promise<unknown> => {
 				return toolDiscardDraft(env, mailboxId, draftId);
+			},
+		}),
+
+		star_email: defineTool({
+			description: "Star or unstar an email to flag it as important.",
+			parameters: z.object({
+				emailId: z.string().describe("The email ID"),
+				starred: z.boolean().describe("true to star, false to unstar"),
+			}),
+			execute: async ({ emailId, starred }): Promise<unknown> => {
+				return toolStarEmail(env, mailboxId, emailId, starred);
+			},
+		}),
+
+		snooze_email: defineTool({
+			description:
+				"Snooze an email: hide it from the inbox until a given time, when it returns to the inbox as unread. Useful for follow-ups and reminders.",
+			parameters: z.object({
+				emailId: z.string().describe("The email ID to snooze"),
+				until: z
+					.string()
+					.describe(
+						"ISO 8601 timestamp for when the email should return to the inbox, e.g. 2026-07-21T08:00:00Z",
+					),
+			}),
+			execute: async ({ emailId, until }): Promise<unknown> => {
+				return toolSnoozeEmail(env, mailboxId, emailId, until);
+			},
+		}),
+
+		list_labels: defineTool({
+			description: "List all labels in this mailbox with their email counts.",
+			parameters: z.object({}),
+			execute: async (): Promise<unknown> => {
+				return toolListLabels(env, mailboxId);
+			},
+		}),
+
+		label_email: defineTool({
+			description:
+				"Add or remove a label on an email. Adding a label that doesn't exist creates it. Use labels to categorize emails (e.g. 'urgent', 'invoice', 'customer').",
+			parameters: z.object({
+				emailId: z.string().describe("The email ID"),
+				label: z.string().describe("The label name (or id)"),
+				remove: z
+					.boolean()
+					.default(false)
+					.describe("true to remove the label instead of adding it"),
+			}),
+			execute: async ({ emailId, label, remove }): Promise<unknown> => {
+				return toolLabelEmail(env, mailboxId, emailId, label, remove);
+			},
+		}),
+
+		list_templates: defineTool({
+			description:
+				"List saved email templates (canned responses) for this mailbox. Use a template's subject/body as the basis for drafts when one fits the situation.",
+			parameters: z.object({}),
+			execute: async (): Promise<unknown> => {
+				return toolListTemplates(env, mailboxId);
+			},
+		}),
+
+		search_contacts: defineTool({
+			description:
+				"Search the mailbox's contact list (auto-collected from sent and received email). Returns email addresses ranked by how often they appear.",
+			parameters: z.object({
+				query: z
+					.string()
+					.optional()
+					.describe("Substring to match against contact email/name. Omit to list top contacts."),
+				limit: z.number().default(10).describe("Max contacts to return"),
+			}),
+			execute: async ({ query, limit }): Promise<unknown> => {
+				return toolSearchContacts(env, mailboxId, query, limit);
 			},
 		}),
 	};

@@ -6,11 +6,14 @@ import { Badge, Button, Dialog, Input, Tooltip } from "@cloudflare/kumo";
 import {
 	ArchiveIcon,
 	CaretLeftIcon,
+	ClockIcon,
+	ClockClockwiseIcon,
 	FileIcon,
 	FolderIcon,
 	PaperPlaneTiltIcon,
 	PencilSimpleIcon,
 	PlusIcon,
+	TagIcon,
 	TrashIcon,
 	TrayIcon,
 } from "@phosphor-icons/react";
@@ -18,11 +21,14 @@ import { useMemo, useState } from "react";
 import { NavLink, useNavigate, useParams } from "react-router";
 import { Folders, SYSTEM_FOLDER_IDS } from "shared/folders";
 import { useCreateFolder, useFolders } from "~/queries/folders";
+import { useLabels, useCreateLabel } from "~/queries/organizer";
 import { useMailbox } from "~/queries/mailboxes";
 import { useUIStore } from "~/hooks/useUIStore";
 
 const FOLDER_ICONS: Record<string, React.ReactNode> = {
 	[Folders.INBOX]: <TrayIcon size={18} weight="regular" />,
+	[Folders.SNOOZED]: <ClockIcon size={18} weight="regular" />,
+	[Folders.SCHEDULED]: <ClockClockwiseIcon size={18} weight="regular" />,
 	[Folders.SENT]: <PaperPlaneTiltIcon size={18} weight="regular" />,
 	[Folders.DRAFT]: <FileIcon size={18} weight="regular" />,
 	[Folders.ARCHIVE]: <ArchiveIcon size={18} weight="regular" />,
@@ -31,6 +37,8 @@ const FOLDER_ICONS: Record<string, React.ReactNode> = {
 
 const SYSTEM_FOLDER_LINKS = [
 	{ id: Folders.INBOX, label: "Inbox" },
+	{ id: Folders.SNOOZED, label: "Snoozed" },
+	{ id: Folders.SCHEDULED, label: "Scheduled" },
 	{ id: Folders.SENT, label: "Sent" },
 	{ id: Folders.DRAFT, label: "Drafts" },
 	{ id: Folders.ARCHIVE, label: "Archive" },
@@ -77,11 +85,16 @@ export default function Sidebar() {
 	const { mailboxId } = useParams<{ mailboxId: string }>();
 	const navigate = useNavigate();
 	const { data: folders = [] } = useFolders(mailboxId);
+	const { data: labels = [] } = useLabels(mailboxId);
 	const createFolderMutation = useCreateFolder();
+	const createLabelMutation = useCreateLabel();
 	const { startCompose, closeSidebar } = useUIStore();
 	const { data: currentMailbox } = useMailbox(mailboxId);
 	const [isCreateFolderOpen, setIsCreateFolderOpen] = useState(false);
 	const [newFolderName, setNewFolderName] = useState("");
+	const [isCreateLabelOpen, setIsCreateLabelOpen] = useState(false);
+	const [newLabelName, setNewLabelName] = useState("");
+	const [newLabelColor, setNewLabelColor] = useState("#8eaa92");
 
 	const customFolders = useMemo(
 		() =>
@@ -100,6 +113,19 @@ export default function Sidebar() {
 			createFolderMutation.mutate({ mailboxId, name: newFolderName.trim() });
 			setNewFolderName("");
 			setIsCreateFolderOpen(false);
+		}
+	};
+
+	const handleCreateLabel = (e: React.FormEvent) => {
+		e.preventDefault();
+		if (newLabelName.trim() && mailboxId) {
+			createLabelMutation.mutate({
+				mailboxId,
+				name: newLabelName.trim(),
+				color: newLabelColor,
+			});
+			setNewLabelName("");
+			setIsCreateLabelOpen(false);
 		}
 	};
 
@@ -221,6 +247,44 @@ export default function Sidebar() {
 						</div>
 					</div>
 				)}
+
+				{/* Labels */}
+				<div className="pt-5 pb-3">
+					<div className="flex items-center justify-between px-3 mb-1.5">
+						<span className="text-xs uppercase tracking-wider font-semibold text-kumo-subtle">
+							Labels
+						</span>
+						<Tooltip content="New label" asChild>
+							<Button
+								variant="ghost"
+								shape="square"
+								size="sm"
+								icon={<PlusIcon size={16} />}
+								onClick={() => setIsCreateLabelOpen(true)}
+								aria-label="Create new label"
+							/>
+						</Tooltip>
+					</div>
+					{labels.map((label) => (
+						<NavLink
+							key={label.id}
+							to={`/mailbox/${mailboxId}/search?q=${encodeURIComponent(`label:"${label.name}"`)}`}
+							onClick={handleNavClick}
+							className="flex items-center gap-3 py-2 px-3 rounded-md text-sm text-kumo-strong hover:bg-kumo-tint transition-colors"
+						>
+							<TagIcon
+								size={18}
+								weight="fill"
+								style={{ color: label.color }}
+								className="shrink-0"
+							/>
+							<span className="truncate flex-1">{label.name}</span>
+							{(label.email_count ?? 0) > 0 && (
+								<span className="text-xs text-kumo-subtle">{label.email_count}</span>
+							)}
+						</NavLink>
+					))}
+				</div>
 			</nav>
 
 			{/* Create folder dialog */}
@@ -252,6 +316,58 @@ export default function Sidebar() {
 								type="submit"
 								variant="primary"
 								disabled={!newFolderName.trim()}
+							>
+								Create
+							</Button>
+						</div>
+					</form>
+				</Dialog>
+			</Dialog.Root>
+
+			{/* Create label dialog */}
+			<Dialog.Root
+				open={isCreateLabelOpen}
+				onOpenChange={setIsCreateLabelOpen}
+			>
+				<Dialog size="sm" className="p-6">
+					<Dialog.Title className="text-base font-semibold mb-4">
+						Create label
+					</Dialog.Title>
+					<form onSubmit={handleCreateLabel} className="space-y-4">
+						<Input
+							label="Label name"
+							placeholder="e.g. Urgent"
+							value={newLabelName}
+							onChange={(e) => setNewLabelName(e.target.value)}
+							required
+						/>
+						<div className="flex items-center gap-2">
+							<label
+								htmlFor="new-label-color"
+								className="text-sm font-medium text-kumo-subtle"
+							>
+								Color
+							</label>
+							<input
+								id="new-label-color"
+								type="color"
+								value={newLabelColor}
+								onChange={(e) => setNewLabelColor(e.target.value)}
+								className="h-8 w-12 cursor-pointer rounded border border-kumo-line bg-transparent"
+							/>
+						</div>
+						<div className="flex justify-end gap-2">
+							<Dialog.Close
+								render={(props) => (
+									<Button {...props} variant="secondary">
+										Cancel
+									</Button>
+								)}
+							/>
+							<Button
+								type="submit"
+								variant="primary"
+								disabled={!newLabelName.trim()}
 							>
 								Create
 							</Button>

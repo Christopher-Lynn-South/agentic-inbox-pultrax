@@ -252,6 +252,50 @@ export function useSaveDraft() {
 	});
 }
 
+export function useSnoozeEmail() {
+	const invalidate = useInvalidateEmailData();
+	return useMutation({
+		mutationFn: ({
+			mailboxId,
+			id,
+			until,
+		}: { mailboxId: string; id: string; until: string }) =>
+			api.snoozeEmail(mailboxId, id, until),
+		onSuccess: (_data, { mailboxId }) => invalidate(mailboxId),
+	});
+}
+
+export function useUnsnoozeEmail() {
+	const invalidate = useInvalidateEmailData();
+	return useMutation({
+		mutationFn: ({ mailboxId, id }: { mailboxId: string; id: string }) =>
+			api.unsnoozeEmail(mailboxId, id),
+		onSuccess: (_data, { mailboxId }) => invalidate(mailboxId),
+	});
+}
+
+export function useScheduleEmail() {
+	const invalidate = useInvalidateEmailData();
+	return useMutation({
+		mutationFn: ({
+			mailboxId,
+			id,
+			sendAt,
+		}: { mailboxId: string; id: string; sendAt: string }) =>
+			api.scheduleEmail(mailboxId, id, sendAt),
+		onSuccess: (_data, { mailboxId }) => invalidate(mailboxId),
+	});
+}
+
+export function useUnscheduleEmail() {
+	const invalidate = useInvalidateEmailData();
+	return useMutation({
+		mutationFn: ({ mailboxId, id }: { mailboxId: string; id: string }) =>
+			api.unscheduleEmail(mailboxId, id),
+		onSuccess: (_data, { mailboxId }) => invalidate(mailboxId),
+	});
+}
+
 export function useReplyToEmail() {
 	const invalidate = useInvalidateEmailData();
 	return useMutation({

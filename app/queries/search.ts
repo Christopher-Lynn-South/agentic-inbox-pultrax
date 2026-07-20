@@ -42,6 +42,7 @@ export function useSearchEmails(
 			if (parsed.is_starred !== undefined)
 				params.is_starred = String(parsed.is_starred);
 			if (parsed.has_attachment) params.has_attachment = "true";
+			if (parsed.label) params.label = parsed.label;
 
 			const data = await api.searchEmails(mailboxId!, params) as
 				| SearchResponse

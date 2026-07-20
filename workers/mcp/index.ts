@@ -19,6 +19,12 @@ import {
 	toolSendEmail,
 	toolMarkEmailRead,
 	toolMoveEmail,
+	toolStarEmail,
+	toolSnoozeEmail,
+	toolListLabels,
+	toolLabelEmail,
+	toolListTemplates,
+	toolSearchContacts,
 } from "../lib/tools";
 import { Folders, FOLDER_TOOL_DESCRIPTION, MOVE_FOLDER_TOOL_DESCRIPTION } from "../../shared/folders";
 import type { Env } from "../types";
@@ -427,6 +433,107 @@ export class EmailMCP extends McpAgent<Env> {
 					};
 				}
 				return mcpText(result);
+			},
+		);
+
+		// ── star_email ─────────────────────────────────────────────
+		this.server.tool(
+			"star_email",
+			"Star or unstar an email to flag it as important.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+				emailId: z.string().describe("The email ID"),
+				starred: z.boolean().describe("true to star, false to unstar"),
+			},
+			async ({ mailboxId, emailId, starred }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				return mcpText(await toolStarEmail(env, mailboxId, emailId, starred));
+			},
+		);
+
+		// ── snooze_email ───────────────────────────────────────────
+		this.server.tool(
+			"snooze_email",
+			"Snooze an email: hide it from the inbox until a given time, when it returns as unread.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+				emailId: z.string().describe("The email ID to snooze"),
+				until: z
+					.string()
+					.describe("ISO 8601 timestamp for when the email returns to the inbox"),
+			},
+			async ({ mailboxId, emailId, until }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				return mcpResult(await toolSnoozeEmail(env, mailboxId, emailId, until));
+			},
+		);
+
+		// ── list_labels ────────────────────────────────────────────
+		this.server.tool(
+			"list_labels",
+			"List all labels in a mailbox with their email counts.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+			},
+			async ({ mailboxId }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				return mcpText(await toolListLabels(env, mailboxId));
+			},
+		);
+
+		// ── label_email ────────────────────────────────────────────
+		this.server.tool(
+			"label_email",
+			"Add or remove a label on an email. Adding a label that doesn't exist creates it.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+				emailId: z.string().describe("The email ID"),
+				label: z.string().describe("The label name (or id)"),
+				remove: z
+					.boolean()
+					.default(false)
+					.describe("true to remove the label instead of adding it"),
+			},
+			async ({ mailboxId, emailId, label, remove }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				return mcpResult(await toolLabelEmail(env, mailboxId, emailId, label, remove));
+			},
+		);
+
+		// ── list_templates ─────────────────────────────────────────
+		this.server.tool(
+			"list_templates",
+			"List saved email templates (canned responses) for a mailbox.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+			},
+			async ({ mailboxId }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				return mcpText(await toolListTemplates(env, mailboxId));
+			},
+		);
+
+		// ── search_contacts ────────────────────────────────────────
+		this.server.tool(
+			"search_contacts",
+			"Search a mailbox's auto-collected contacts, ranked by frequency of correspondence.",
+			{
+				mailboxId: z.string().describe("The mailbox email address"),
+				query: z
+					.string()
+					.optional()
+					.describe("Substring to match against contact email/name"),
+				limit: z.number().default(10).describe("Max contacts to return"),
+			},
+			async ({ mailboxId, query, limit }) => {
+				const denied = await verifyMailbox(mailboxId);
+				if (denied) return denied;
+				return mcpText(await toolSearchContacts(env, mailboxId, query, limit));
 			},
 		);
 	}

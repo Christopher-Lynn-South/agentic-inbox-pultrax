@@ -11,9 +11,11 @@ import EmailPanelHeader from "~/components/email-panel/EmailPanelHeader";
 import EmailPanelToolbar from "~/components/email-panel/EmailPanelToolbar";
 import SingleMessageView from "~/components/email-panel/SingleMessageView";
 import ThreadMessage from "~/components/email-panel/ThreadMessage";
+import { TagIcon, ClockIcon } from "@phosphor-icons/react";
 import { splitEmailList, toEmailListValue } from "~/lib/utils";
 import api from "~/services/api";
-import { useDeleteEmail, useEmail, useMoveEmail, useReplyToEmail, useSendEmail, useThreadReplies, useUpdateEmail } from "~/queries/emails";
+import { useDeleteEmail, useEmail, useMoveEmail, useReplyToEmail, useSendEmail, useSnoozeEmail, useThreadReplies, useUnscheduleEmail, useUnsnoozeEmail, useUpdateEmail } from "~/queries/emails";
+import { useAddEmailLabel, useLabels, useRemoveEmailLabel } from "~/queries/organizer";
 import { useFolders } from "~/queries/folders";
 import { useMailbox } from "~/queries/mailboxes";
 import { useUIStore } from "~/hooks/useUIStore";
@@ -51,6 +53,14 @@ export default function EmailPanel({ emailId }: { emailId: string }) {
 	const [expandedMessages, setExpandedMessages] = useState<Set<string>>(new Set());
 	const [previewImage, setPreviewImage] = useState<{ url: string; filename: string } | null>(null);
 	const isDraftFolder = folder === Folders.DRAFT;
+	const isSnoozedFolder = folder === Folders.SNOOZED;
+	const isScheduledFolder = folder === Folders.SCHEDULED;
+	const { data: allLabels = [] } = useLabels(mailboxId);
+	const snoozeMut = useSnoozeEmail();
+	const unsnoozeMut = useUnsnoozeEmail();
+	const unscheduleMut = useUnscheduleEmail();
+	const addLabelMut = useAddEmailLabel();
+	const removeLabelMut = useRemoveEmailLabel();
 
 	const threadReplies = useMemo(() => {
 		if (!threadRepliesRaw || !email) return [];
@@ -88,6 +98,38 @@ export default function EmailPanel({ emailId }: { emailId: string }) {
 	if (!email) return <EmailPanelSkeleton />;
 
 	const toggleStar = () => { if (mailboxId) updateEmail.mutate({ mailboxId, id: email.id, data: { starred: !email.starred } }); };
+	const handleSnooze = (until: string) => {
+		if (!mailboxId) return;
+		snoozeMut.mutate(
+			{ mailboxId, id: email.id, until },
+			{
+				onSuccess: () => toastManager.add({ title: `Snoozed until ${new Date(until).toLocaleString()}` }),
+				onError: () => toastManager.add({ title: "Failed to snooze email", variant: "error" }),
+			},
+		);
+		closePanel();
+	};
+	const handleUnsnooze = () => {
+		if (!mailboxId) return;
+		unsnoozeMut.mutate(
+			{ mailboxId, id: email.id },
+			{ onSuccess: () => toastManager.add({ title: "Returned to inbox" }) },
+		);
+		closePanel();
+	};
+	const handleUnschedule = () => {
+		if (!mailboxId) return;
+		unscheduleMut.mutate(
+			{ mailboxId, id: email.id },
+			{ onSuccess: () => toastManager.add({ title: "Scheduled send canceled — moved to drafts" }) },
+		);
+		closePanel();
+	};
+	const handleToggleLabel = (labelId: string, active: boolean) => {
+		if (!mailboxId) return;
+		if (active) removeLabelMut.mutate({ mailboxId, emailId: email.id, labelId });
+		else addLabelMut.mutate({ mailboxId, emailId: email.id, labelId });
+	};
 	const handleMove = (folderId: string) => { if (mailboxId) { moveEmailMut.mutate({ mailboxId, id: email.id, folderId }); closePanel(); } };
 	const handleDelete = () => { if (mailboxId) { if (!window.confirm("Are you sure you want to delete this email?")) return; deleteEmailMut.mutate({ mailboxId, id: email.id }); closePanel(); } };
 
@@ -145,8 +187,15 @@ export default function EmailPanel({ emailId }: { emailId: string }) {
 				email={email}
 				mailboxId={mailboxId}
 				isDraftFolder={isDraftFolder}
+				isSnoozedFolder={isSnoozedFolder}
+				isScheduledFolder={isScheduledFolder}
 				isSending={isSending}
 				moveToFolders={moveToFolders}
+				labels={allLabels}
+				onSnooze={handleSnooze}
+				onUnsnooze={handleUnsnooze}
+				onUnschedule={handleUnschedule}
+				onToggleLabel={handleToggleLabel}
 				onBack={closePanel}
 				onSendDraft={() => handleSendDraft()}
 				onEditDraft={() => handleEditDraft()}
@@ -180,6 +229,33 @@ export default function EmailPanel({ emailId }: { emailId: string }) {
 				messageCount={allMessages.length}
 				showThreadCount={hasThread}
 			/>
+
+			{/* Labels + snooze/schedule status */}
+			{((email.labels && email.labels.length > 0) || email.snoozed_until || email.scheduled_at) && (
+				<div className="flex flex-wrap items-center gap-1.5 px-4 pb-2 md:px-5">
+					{email.labels?.map((label) => (
+						<span
+							key={label.id}
+							className="inline-flex items-center gap-1 rounded-full border border-kumo-line px-2 py-0.5 text-xs text-kumo-strong"
+						>
+							<TagIcon size={12} weight="fill" style={{ color: label.color }} />
+							{label.name}
+						</span>
+					))}
+					{email.snoozed_until && (
+						<span className="inline-flex items-center gap-1 rounded-full bg-kumo-tint px-2 py-0.5 text-xs text-kumo-subtle">
+							<ClockIcon size={12} />
+							Snoozed until {new Date(email.snoozed_until).toLocaleString()}
+						</span>
+					)}
+					{email.scheduled_at && (
+						<span className="inline-flex items-center gap-1 rounded-full bg-kumo-tint px-2 py-0.5 text-xs text-kumo-subtle">
+							<ClockIcon size={12} />
+							Sends {new Date(email.scheduled_at).toLocaleString()}
+						</span>
+					)}
+				</div>
+			)}
 
 			<div className="flex-1 overflow-y-auto">
 				{hasThread ? (

@@ -14,9 +14,10 @@ import {
 	stripHtml,
 	toEmailListValue,
 } from "~/lib/utils";
-import { useDeleteEmail, useForwardEmail, useReplyToEmail, useSaveDraft, useSendEmail } from "~/queries/emails";
+import { useDeleteEmail, useForwardEmail, useReplyToEmail, useSaveDraft, useScheduleEmail, useSendEmail } from "~/queries/emails";
 import { useMailbox } from "~/queries/mailboxes";
 import { useUIStore } from "~/hooks/useUIStore";
+import type { Template } from "~/types";
 
 function appendUniqueAddress(
 	addresses: string[],
@@ -171,6 +172,7 @@ export function useComposeForm(mailboxId?: string, _folder?: string) {
 	const replyMutation = useReplyToEmail();
 	const forwardMutation = useForwardEmail();
 	const deleteEmailMutation = useDeleteEmail();
+	const scheduleEmailMutation = useScheduleEmail();
 
 	const [to, setTo] = useState("");
 	const [cc, setCc] = useState("");
@@ -232,6 +234,44 @@ export function useComposeForm(mailboxId?: string, _folder?: string) {
 		finally { setIsSavingDraft(false); }
 	};
 
+	/** Insert a saved template into the compose form. */
+	const applyTemplate = (template: Template) => {
+		if (template.subject && !subject.trim()) setSubject(template.subject);
+		// Template bodies are stored as plain text (with optional inline HTML);
+		// convert newlines so they render correctly in the rich text editor.
+		const htmlBody = /<[a-z][\s\S]*>/i.test(template.body)
+			? template.body
+			: `<p>${template.body.replace(/\n\n/g, "</p><p>").replace(/\n/g, "<br>")}</p>`;
+		setBody(`${htmlBody}${sigBlock ? `<p><br></p>${sigBlock}` : ""}`);
+	};
+
+	/** Save the current compose state as a draft, then schedule it to send later. */
+	const handleScheduleSend = async (sendAt: string, onClose: () => void) => {
+		if (!mailboxId || isSending) return;
+		if (splitEmailList(to).length === 0) { setError("Add at least one recipient before scheduling."); return; }
+		setIsSending(true); setError(null);
+		try {
+			const saved = await saveDraftMutation.mutateAsync({ mailboxId, draft: {
+				to,
+				cc: cc || undefined,
+				bcc: bcc || undefined,
+				subject,
+				body,
+				in_reply_to: composeOptions.originalEmail?.id || composeOptions.draftEmail?.in_reply_to || undefined,
+				thread_id: composeOptions.originalEmail?.thread_id || composeOptions.draftEmail?.thread_id || undefined,
+				draft_id: composeOptions.draftEmail?.id || undefined,
+			} });
+			const draftId = (saved as unknown as { id: string }).id;
+			await scheduleEmailMutation.mutateAsync({ mailboxId, id: draftId, sendAt });
+			toastManager.add({ title: `Scheduled for ${new Date(sendAt).toLocaleString()}` });
+			onClose();
+		} catch (err: unknown) {
+			const message = (err instanceof Error ? err.message : null) || "Failed to schedule email.";
+			setError(message);
+			toastManager.add({ title: message, variant: "error" });
+		} finally { setIsSending(false); }
+	};
+
 	const handleSend = async (e: FormEvent, onClose: () => void) => {
 		e.preventDefault(); if (isSending) return; setError(null);
 		if (!currentMailbox || !mailboxId) { setError("No mailbox selected."); return; }
@@ -262,5 +302,5 @@ export function useComposeForm(mailboxId?: string, _folder?: string) {
 		finally { setIsSending(false); }
 	};
 
-	return { to, setTo, cc, setCc, bcc, setBcc, showCcBcc, setShowCcBcc, subject, setSubject, body, setBody, error, setError, isSavingDraft, isSending, formTitle, handleSaveDraft, handleSend, closeCompose, closePanel };
+	return { to, setTo, cc, setCc, bcc, setBcc, showCcBcc, setShowCcBcc, subject, setSubject, body, setBody, error, setError, isSavingDraft, isSending, formTitle, handleSaveDraft, handleSend, handleScheduleSend, applyTemplate, closeCompose, closePanel };
 }
