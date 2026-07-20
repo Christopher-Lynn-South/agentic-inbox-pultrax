@@ -2,11 +2,13 @@
 // Licensed under the Apache 2.0 license found in the LICENSE file or at:
 //     https://opensource.org/licenses/Apache-2.0
 
-import { Button, Pagination, Tooltip } from "@cloudflare/kumo";
+import { Button, Checkbox, Pagination, Tooltip } from "@cloudflare/kumo";
 import {
 	ArchiveIcon,
 	ArrowBendUpLeftIcon,
 	ArrowsClockwiseIcon,
+	ClockIcon,
+	ClockClockwiseIcon,
 	EnvelopeOpenIcon,
 	EnvelopeSimpleIcon,
 	FileIcon,
@@ -15,15 +17,18 @@ import {
 	StarIcon,
 	TrashIcon,
 	TrayIcon,
+	XIcon,
 } from "@phosphor-icons/react";
 import { useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router";
 import { Folders } from "shared/folders";
 import { formatListDate } from "shared/dates";
 import MailboxSplitView from "~/components/MailboxSplitView";
 import { getSnippetText } from "~/lib/utils";
+import { formatDueDate } from "~/lib/snooze";
 import {
+	useBulkEmailAction,
 	useDeleteEmail,
 	useEmails,
 	useMarkThreadRead,
@@ -77,6 +82,21 @@ const FOLDER_EMPTY_STATES: Record<
 		title: "Trash is empty",
 		description:
 			"Deleted emails will appear here. You can restore them or permanently delete them.",
+	},
+	[Folders.SNOOZED]: {
+		icon: <ClockIcon size={48} weight="thin" className="text-kumo-subtle" />,
+		title: "Nothing snoozed",
+		description:
+			"Snoozed emails hide here until their time comes, then return to your inbox.",
+	},
+	[Folders.SCHEDULED]: {
+		icon: (
+			<ClockClockwiseIcon size={48} weight="thin" className="text-kumo-subtle" />
+		),
+		title: "Nothing scheduled",
+		description:
+			"Emails you schedule from the composer wait here until their send time.",
+		showCompose: true,
 	},
 };
 
@@ -158,6 +178,8 @@ export default function EmailListRoute() {
 	const updateEmail = useUpdateEmail();
 	const markThreadRead = useMarkThreadRead();
 	const deleteEmail = useDeleteEmail();
+	const bulkAction = useBulkEmailAction();
+	const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
 	const params = useMemo(
 		() => ({
@@ -196,6 +218,7 @@ export default function EmailListRoute() {
 		if (folderChanged) {
 			closePanel();
 			setPage(1);
+			setSelectedIds(new Set());
 		}
 	}, [mailboxId, folder, closePanel]);
 
@@ -268,12 +291,144 @@ export default function EmailListRoute() {
 		return email.sender.split("@")[0];
 	};
 
+	// ---------- Bulk selection ----------
+
+	const toggleSelected = (emailId: string) => {
+		setSelectedIds((prev) => {
+			const next = new Set(prev);
+			if (next.has(emailId)) next.delete(emailId);
+			else next.add(emailId);
+			return next;
+		});
+	};
+
+	const allSelected = emails.length > 0 && emails.every((e) => selectedIds.has(e.id));
+
+	const toggleSelectAll = () => {
+		setSelectedIds(allSelected ? new Set() : new Set(emails.map((e) => e.id)));
+	};
+
+	const runBulk = async (
+		action: "read" | "unread" | "delete" | "move",
+		folderId?: string,
+	) => {
+		if (!mailboxId || selectedIds.size === 0) return;
+		if (action === "delete" && !window.confirm(`Delete ${selectedIds.size} email(s)?`)) return;
+		await bulkAction.mutateAsync({ mailboxId, ids: [...selectedIds], action, folderId });
+		if (selectedEmailId && selectedIds.has(selectedEmailId) && action !== "read" && action !== "unread") closePanel();
+		setSelectedIds(new Set());
+	};
+
+	// ---------- Keyboard shortcuts (j/k/e/s/u/c) ----------
+
+	const emailsRef = useRef(emails);
+	emailsRef.current = emails;
+	const handleShortcut = useCallback(
+		(e: KeyboardEvent) => {
+			const target = e.target as HTMLElement;
+			if (
+				e.metaKey || e.ctrlKey || e.altKey ||
+				target.tagName === "INPUT" ||
+				target.tagName === "TEXTAREA" ||
+				target.isContentEditable
+			)
+				return;
+
+			const list = emailsRef.current;
+			const state = useUIStore.getState();
+			const currentId = state.selectedEmailId;
+			const idx = list.findIndex((em) => em.id === currentId);
+
+			switch (e.key) {
+				case "j": {
+					const next = list[Math.min(idx + 1, list.length - 1)];
+					if (next) state.selectEmail(next.id);
+					break;
+				}
+				case "k": {
+					const prev = list[Math.max(idx - 1, 0)];
+					if (prev) state.selectEmail(prev.id);
+					break;
+				}
+				case "e": {
+					if (currentId && mailboxId && folder !== Folders.ARCHIVE) {
+						bulkAction.mutate({ mailboxId, ids: [currentId], action: "move", folderId: Folders.ARCHIVE });
+						state.closePanel();
+					}
+					break;
+				}
+				case "s": {
+					const current = list.find((em) => em.id === currentId);
+					if (current && mailboxId)
+						updateEmail.mutate({ mailboxId, id: current.id, data: { starred: !current.starred } });
+					break;
+				}
+				case "u": {
+					const current = list.find((em) => em.id === currentId);
+					if (current && mailboxId)
+						updateEmail.mutate({ mailboxId, id: current.id, data: { read: !current.read } });
+					break;
+				}
+				case "c": {
+					state.startCompose();
+					break;
+				}
+			}
+		},
+		[mailboxId, folder, bulkAction, updateEmail],
+	);
+
+	useEffect(() => {
+		document.addEventListener("keydown", handleShortcut);
+		return () => document.removeEventListener("keydown", handleShortcut);
+	}, [handleShortcut]);
+
+	const isTimedFolder = folder === Folders.SNOOZED || folder === Folders.SCHEDULED;
+
 	return (
 		<MailboxSplitView
 			selectedEmailId={selectedEmailId}
 			isComposing={isComposing}
 		>
-				{/* Folder header */}
+				{/* Folder header / bulk action bar */}
+				{selectedIds.size > 0 ? (
+					<div className="flex items-center gap-2 px-4 py-2.5 border-b border-kumo-line shrink-0 md:px-5 bg-kumo-tint">
+						<Checkbox
+							aria-label="Select all"
+							checked={allSelected}
+							indeterminate={!allSelected && selectedIds.size > 0}
+							onCheckedChange={toggleSelectAll}
+						/>
+						<span className="text-sm font-medium text-kumo-default mr-1">
+							{selectedIds.size} selected
+						</span>
+						<Tooltip content="Mark read" side="bottom" asChild>
+							<Button variant="ghost" shape="square" size="sm" icon={<EnvelopeOpenIcon size={16} />} onClick={() => runBulk("read")} aria-label="Mark read" />
+						</Tooltip>
+						<Tooltip content="Mark unread" side="bottom" asChild>
+							<Button variant="ghost" shape="square" size="sm" icon={<EnvelopeSimpleIcon size={16} />} onClick={() => runBulk("unread")} aria-label="Mark unread" />
+						</Tooltip>
+						{folder !== Folders.ARCHIVE && (
+							<Tooltip content="Archive" side="bottom" asChild>
+								<Button variant="ghost" shape="square" size="sm" icon={<ArchiveIcon size={16} />} onClick={() => runBulk("move", Folders.ARCHIVE)} aria-label="Archive" />
+							</Tooltip>
+						)}
+						{folder !== Folders.TRASH ? (
+							<Tooltip content="Move to trash" side="bottom" asChild>
+								<Button variant="ghost" shape="square" size="sm" icon={<TrashIcon size={16} />} onClick={() => runBulk("move", Folders.TRASH)} aria-label="Move to trash" />
+							</Tooltip>
+						) : (
+							<Tooltip content="Delete forever" side="bottom" asChild>
+								<Button variant="ghost" shape="square" size="sm" icon={<TrashIcon size={16} />} onClick={() => runBulk("delete")} aria-label="Delete forever" />
+							</Tooltip>
+						)}
+						<div className="ml-auto">
+							<Tooltip content="Clear selection" side="bottom" asChild>
+								<Button variant="ghost" shape="square" size="sm" icon={<XIcon size={16} />} onClick={() => setSelectedIds(new Set())} aria-label="Clear selection" />
+							</Tooltip>
+						</div>
+					</div>
+				) : (
 				<div className="flex items-center justify-between px-4 py-3.5 border-b border-kumo-line shrink-0 md:px-5">
 					<h1 className="text-lg font-semibold text-kumo-default">
 						{folderName}
@@ -306,6 +461,7 @@ export default function EmailListRoute() {
 						</Tooltip>
 					</div>
 				</div>
+				)}
 
 				{/* Email rows */}
 				<div className="flex-1 overflow-y-auto">
@@ -332,8 +488,21 @@ export default function EmailListRoute() {
 											isPanelOpen ? "md:px-4 md:py-2.5" : ""
 										} ${isSelected ? "bg-kumo-tint" : "hover:bg-kumo-tint"}`}
 									>
+										{/* Selection checkbox */}
+										<div
+											className={`shrink-0 ${selectedIds.size > 0 ? "flex" : "hidden group-hover:flex"} items-center`}
+											onClick={(e) => e.stopPropagation()}
+											onKeyDown={(e) => e.stopPropagation()}
+										>
+											<Checkbox
+												aria-label={`Select email from ${email.sender}`}
+												checked={selectedIds.has(email.id)}
+												onCheckedChange={() => toggleSelected(email.id)}
+											/>
+										</div>
+
 										{/* Unread dot */}
-										<div className="w-2.5 shrink-0 flex justify-center">
+										<div className={`w-2.5 shrink-0 justify-center ${selectedIds.size > 0 ? "hidden" : "flex group-hover:hidden"}`}>
 											{hasUnread(email) && (
 												<div className="h-2 w-2 rounded-full bg-kumo-brand" />
 											)}
@@ -383,6 +552,13 @@ export default function EmailListRoute() {
 															<ArrowBendUpLeftIcon size={14} weight="bold" />
 														</span>
 													</Tooltip>
+												)}
+												{isTimedFolder && email.due_at && (
+													<span className="shrink-0 inline-flex items-center gap-1 text-xs text-kumo-warning font-medium">
+														<ClockIcon size={13} weight="bold" />
+														{folder === Folders.SCHEDULED ? "Sends" : "Until"}{" "}
+														{formatDueDate(email.due_at)}
+													</span>
 												)}
 												<span className="text-sm text-kumo-subtle shrink-0 ml-auto">
 													{formatListDate(email.date)}

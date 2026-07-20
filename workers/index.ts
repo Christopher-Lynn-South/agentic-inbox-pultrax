@@ -14,6 +14,8 @@ import {
 	generateMessageId,
 	buildThreadingHeaders,
 	listMailboxes,
+	textToHtml,
+	escapeHtml,
 } from "./lib/email-helpers";
 import { SendEmailRequestSchema } from "./lib/schemas";
 import { handleReplyEmail, handleForwardEmail } from "./routes/reply-forward";
@@ -168,7 +170,7 @@ app.get("/api/v1/mailboxes/:mailboxId/emails", async (c: AppContext) => {
 app.post("/api/v1/mailboxes/:mailboxId/emails", async (c: AppContext) => {
 	const mailboxId = c.req.param("mailboxId")!;
 	const body = SendEmailRequestSchema.parse(await c.req.json());
-	const { to, cc, bcc, from, subject, html, text, attachments, in_reply_to, references, thread_id } = body;
+	const { to, cc, bcc, from, subject, html, text, attachments, in_reply_to, references, thread_id, send_at } = body;
 
 	let toStr: string, fromEmail: string, fromDomain: string;
 	try {
@@ -183,6 +185,32 @@ app.post("/api/v1/mailboxes/:mailboxId/emails", async (c: AppContext) => {
 	const rateLimitError = await (stub as any).checkSendRateLimit();
 	if (rateLimitError) return c.json({ error: rateLimitError }, 429);
 	const attachmentData = await storeAttachments(c.env.BUCKET, messageId, attachments);
+
+	// Scheduled send: park the email in the Scheduled folder; the mailbox
+	// DO alarm delivers it at send_at. Threading headers are rebuilt at
+	// send time from in_reply_to / email_references.
+	if (send_at) {
+		const sendAtMs = Date.parse(send_at);
+		if (Number.isNaN(sendAtMs)) return c.json({ error: "Invalid send_at timestamp" }, 400);
+		if (sendAtMs <= Date.now()) return c.json({ error: "send_at must be in the future" }, 400);
+
+		await stub.createEmail(Folders.SCHEDULED, {
+			id: messageId, subject, sender: fromEmail, recipient: toStr,
+			cc: cc ? (Array.isArray(cc) ? cc.join(", ") : cc).toLowerCase() : null,
+			bcc: bcc ? (Array.isArray(bcc) ? bcc.join(", ") : bcc).toLowerCase() : null,
+			date: new Date().toISOString(), body: html || text || "", read: true,
+			in_reply_to: in_reply_to || null, email_references: references ? JSON.stringify(references) : null,
+			thread_id: thread_id || in_reply_to || messageId, message_id: outgoingMessageId,
+			due_at: new Date(sendAtMs).toISOString(),
+		}, attachmentData);
+
+		c.executionCtx.waitUntil(
+			(stub as any).upsertContacts(
+				[...(Array.isArray(to) ? to : [to]), ...(cc ? (Array.isArray(cc) ? cc : [cc]) : [])].map((e) => ({ email: e })),
+			).catch(() => {}),
+		);
+		return c.json({ id: messageId, status: "scheduled", send_at: new Date(sendAtMs).toISOString() }, 202);
+	}
 
 	await stub.createEmail(Folders.SENT, {
 		id: messageId, subject, sender: fromEmail, recipient: toStr,
@@ -208,7 +236,78 @@ app.post("/api/v1/mailboxes/:mailboxId/emails", async (c: AppContext) => {
 			...(in_reply_to ? { headers: buildThreadingHeaders(in_reply_to, references || []) } : {}),
 		}).catch((e) => console.error("Deferred email delivery failed:", (e as Error).message)),
 	);
+	c.executionCtx.waitUntil(
+		(stub as any).upsertContacts(
+			[...(Array.isArray(to) ? to : [to]), ...(cc ? (Array.isArray(cc) ? cc : [cc]) : [])].map((e) => ({ email: e })),
+		).catch(() => {}),
+	);
 	return c.json({ id: messageId, status: "sent" }, 202);
+});
+
+// -- Snooze / scheduled-send management -----------------------------
+
+app.post("/api/v1/mailboxes/:mailboxId/emails/:id/snooze", async (c: AppContext) => {
+	const { until } = (await c.req.json()) as { until: string };
+	if (!until) return c.json({ error: "Missing 'until' timestamp" }, 400);
+	const result = await (c.var.mailboxStub as any).snoozeEmail(c.req.param("id")!, until);
+	return "error" in result ? c.json(result, 400) : c.json(result);
+});
+
+app.post("/api/v1/mailboxes/:mailboxId/emails/:id/unsnooze", async (c: AppContext) => {
+	const result = await (c.var.mailboxStub as any).unsnoozeEmail(c.req.param("id")!);
+	return "error" in result ? c.json(result, 400) : c.json(result);
+});
+
+app.post("/api/v1/mailboxes/:mailboxId/emails/:id/cancel-schedule", async (c: AppContext) => {
+	const result = await (c.var.mailboxStub as any).cancelScheduledSend(c.req.param("id")!);
+	return "error" in result ? c.json(result, 400) : c.json(result);
+});
+
+// -- Bulk actions ---------------------------------------------------
+
+const BulkActionBody = z.object({
+	ids: z.array(z.string()).min(1).max(100),
+	action: z.enum(["read", "unread", "star", "unstar", "move", "delete"]),
+	folderId: z.string().optional(),
+});
+
+app.post("/api/v1/mailboxes/:mailboxId/emails/bulk", async (c: AppContext) => {
+	const { ids, action, folderId } = BulkActionBody.parse(await c.req.json());
+	const stub = c.var.mailboxStub as any;
+
+	switch (action) {
+		case "read":
+			return c.json(await stub.bulkUpdateEmails(ids, { read: true }));
+		case "unread":
+			return c.json(await stub.bulkUpdateEmails(ids, { read: false }));
+		case "star":
+			return c.json(await stub.bulkUpdateEmails(ids, { starred: true }));
+		case "unstar":
+			return c.json(await stub.bulkUpdateEmails(ids, { starred: false }));
+		case "move": {
+			if (!folderId) return c.json({ error: "folderId is required for move" }, 400);
+			const result = await stub.bulkMoveEmails(ids, folderId);
+			return "error" in result ? c.json(result, 400) : c.json(result);
+		}
+		case "delete": {
+			const attachments = await stub.bulkDeleteEmails(ids) as { id: string; email_id: string; filename: string }[];
+			if (attachments.length > 0) {
+				await c.env.BUCKET.delete(
+					attachments.map((att) => `attachments/${att.email_id}/${att.id}/${att.filename}`),
+				);
+			}
+			return c.json({ status: "deleted", count: ids.length });
+		}
+	}
+});
+
+// -- Contacts -------------------------------------------------------
+
+app.get("/api/v1/mailboxes/:mailboxId/contacts", async (c: AppContext) => {
+	const query = c.req.query("query") || undefined;
+	const limit = intQuery(c, "limit");
+	const contacts = await (c.var.mailboxStub as any).getContacts(query, limit ?? 20);
+	return c.json(contacts);
 });
 
 app.post("/api/v1/mailboxes/:mailboxId/drafts", async (c: AppContext) => {
@@ -364,7 +463,10 @@ async function receiveEmail(event: { raw: ReadableStream; rawSize: number }, env
 	if (!mailboxId) throw new Error("received email with no valid recipient address");
 
 	const messageId = crypto.randomUUID();
-	if (!(await env.BUCKET.head(`mailboxes/${mailboxId}.json`))) { console.log(`Ignoring email for ${mailboxId}: mailbox does not exist`); return; }
+	const settingsObj = await env.BUCKET.get(`mailboxes/${mailboxId}.json`);
+	if (!settingsObj) { console.log(`Ignoring email for ${mailboxId}: mailbox does not exist`); return; }
+	let mailboxSettings: MailboxStoredSettings = {};
+	try { mailboxSettings = await settingsObj.json() as MailboxStoredSettings; } catch { /* corrupt settings — proceed with defaults */ }
 
 	const stub = env.MAILBOX.get(env.MAILBOX.idFromName(mailboxId));
 
@@ -402,11 +504,160 @@ async function receiveEmail(event: { raw: ReadableStream; rawSize: number }, env
 		thread_id: threadId, message_id: originalMessageId, raw_headers: JSON.stringify(parsedEmail.headers),
 	}, attachmentData);
 
+	// Record the sender as a contact for composer autocomplete.
+	const senderAddress = (parsedEmail.from?.address || "").toLowerCase();
+	if (senderAddress) {
+		ctx.waitUntil(
+			(stub as any).upsertContacts([
+				{ email: senderAddress, name: parsedEmail.from?.name || null },
+			]).catch(() => {}),
+		);
+	}
+
+	// Honor per-mailbox forwarding + auto-reply settings.
+	ctx.waitUntil(
+		handleInboundAutomation(env, stub, mailboxId, mailboxSettings, parsedEmail, threadId)
+			.catch((e) => console.error("Inbound automation failed:", (e as Error).message)),
+	);
+
 	const agentStub = env.EMAIL_AGENT.get(env.EMAIL_AGENT.idFromName(mailboxId));
 	ctx.waitUntil(agentStub.fetch(new Request("https://agents/onNewEmail", {
 		method: "POST", headers: { "Content-Type": "application/json" },
 		body: JSON.stringify({ mailboxId, emailId: messageId, sender: (parsedEmail.from?.address || "").toLowerCase(), subject: parsedEmail.subject || "", threadId }),
 	})).catch((e) => console.error("Auto-draft trigger failed:", (e as Error).message)));
+}
+
+// -- Inbound automation: forwarding + auto-reply --------------------
+
+interface MailboxStoredSettings {
+	fromName?: string;
+	forwarding?: { enabled: boolean; email: string };
+	autoReply?: { enabled: boolean; subject: string; message: string };
+	[key: string]: unknown;
+}
+
+interface ParsedInboundEmail {
+	from?: { address?: string; name?: string };
+	subject?: string;
+	html?: string | null;
+	text?: string | null;
+	messageId?: string;
+	headers?: { key: string; value: string }[] | Record<string, string>;
+}
+
+function getInboundHeader(parsed: ParsedInboundEmail, name: string): string {
+	const headers = parsed.headers;
+	if (!headers) return "";
+	if (Array.isArray(headers)) {
+		const found = headers.find((h) => h.key?.toLowerCase() === name);
+		return typeof found?.value === "string" ? found.value : "";
+	}
+	return String((headers as Record<string, string>)[name] ?? "");
+}
+
+/**
+ * Detect automated senders / bulk mail we must never auto-respond to,
+ * per RFC 3834 (Auto-Submitted) and common conventions.
+ */
+function isAutomatedMessage(parsed: ParsedInboundEmail): boolean {
+	const sender = parsed.from?.address?.toLowerCase() || "";
+	if (/no-?reply|mailer-daemon|postmaster|bounce/i.test(sender)) return true;
+
+	const autoSubmitted = getInboundHeader(parsed, "auto-submitted").toLowerCase();
+	if (autoSubmitted && autoSubmitted !== "no") return true;
+	if (getInboundHeader(parsed, "x-auto-response-suppress")) return true;
+	const precedence = getInboundHeader(parsed, "precedence").toLowerCase();
+	if (["bulk", "junk", "list", "auto_reply"].includes(precedence)) return true;
+	if (getInboundHeader(parsed, "list-id") || getInboundHeader(parsed, "list-unsubscribe")) return true;
+
+	return false;
+}
+
+async function handleInboundAutomation(
+	env: Env,
+	stub: ReturnType<Env["MAILBOX"]["get"]>,
+	mailboxId: string,
+	settings: MailboxStoredSettings,
+	parsed: ParsedInboundEmail,
+	threadId: string,
+) {
+	const sender = parsed.from?.address?.toLowerCase() || "";
+
+	// -- Forwarding --
+	const forwardTarget = settings.forwarding?.enabled
+		? (settings.forwarding.email || "").trim().toLowerCase()
+		: "";
+	if (
+		forwardTarget &&
+		forwardTarget.includes("@") &&
+		forwardTarget !== mailboxId.toLowerCase() &&
+		forwardTarget !== sender
+	) {
+		const safeSender = escapeHtml(parsed.from?.address || "unknown");
+		const safeSubject = escapeHtml(parsed.subject || "(no subject)");
+		const originalBody = parsed.html || (parsed.text ? textToHtml(parsed.text) : "");
+		const forwardBody = `<div><strong>Forwarded message</strong><br><strong>From:</strong> ${safeSender}<br><strong>Subject:</strong> ${safeSubject}<br><br></div>${originalBody}`;
+		try {
+			await sendEmail(env.EMAIL, {
+				to: forwardTarget,
+				from: mailboxId,
+				subject: `Fwd: ${parsed.subject || "(no subject)"}`,
+				html: forwardBody,
+				headers: { "Auto-Submitted": "auto-forwarded" },
+			});
+		} catch (e) {
+			console.error("Auto-forward failed:", (e as Error).message);
+		}
+	}
+
+	// -- Auto-reply --
+	const autoReply = settings.autoReply;
+	if (!autoReply?.enabled || !autoReply.message || !sender) return;
+	if (sender === mailboxId.toLowerCase()) return;
+	if (isAutomatedMessage(parsed)) return;
+	if (!(await (stub as any).shouldAutoReply(sender))) return;
+
+	const replySubject =
+		autoReply.subject?.trim() ||
+		(parsed.subject ? `Re: ${parsed.subject}` : "Automatic reply");
+	const replyBody = textToHtml(autoReply.message);
+	const originalMsgId = parsed.messageId
+		? parsed.messageId.replace(/^<|>$/g, "")
+		: null;
+	const fromDomain = mailboxId.split("@")[1] || "";
+	const { messageId: replyId, outgoingMessageId } = generateMessageId(fromDomain);
+
+	try {
+		await sendEmail(env.EMAIL, {
+			to: sender,
+			from: mailboxId,
+			subject: replySubject,
+			html: replyBody,
+			headers: {
+				// RFC 3834: mark as automatic so other systems don't reply back.
+				"Auto-Submitted": "auto-replied",
+				"X-Auto-Response-Suppress": "All",
+				...(originalMsgId ? buildThreadingHeaders(originalMsgId, []) : {}),
+			},
+		});
+	} catch (e) {
+		console.error("Auto-reply send failed:", (e as Error).message);
+		return;
+	}
+
+	// Record the auto-reply in Sent so the conversation stays complete.
+	await stub.createEmail(Folders.SENT, {
+		id: replyId,
+		subject: replySubject,
+		sender: mailboxId.toLowerCase(),
+		recipient: sender,
+		date: new Date().toISOString(),
+		body: replyBody,
+		in_reply_to: originalMsgId,
+		email_references: null,
+		thread_id: threadId,
+		message_id: outgoingMessageId,
+	}, []);
 }
 
 export { app, receiveEmail };

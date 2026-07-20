@@ -84,6 +84,10 @@ export const SendEmailRequestSchema = z
 		in_reply_to: z.string().optional(),
 		references: z.array(z.string()).optional(),
 		thread_id: z.string().optional(),
+		/** ISO timestamp — when set (and in the future), the email is
+		 * stored in the Scheduled folder and sent by a DO alarm instead
+		 * of immediately. */
+		send_at: z.string().optional(),
 	})
 	.refine((data) => data.html || data.text, {
 		message: "Either 'html' or 'text' must be provided",

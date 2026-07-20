@@ -4,9 +4,12 @@
 
 import { Banner, Button, Input } from "@cloudflare/kumo";
 import { FloppyDiskIcon, PaperPlaneTiltIcon, XIcon } from "@phosphor-icons/react";
+import { useId } from "react";
 import { useParams } from "react-router";
 import { useComposeForm } from "~/hooks/useComposeForm";
+import { useContacts } from "~/queries/contacts";
 import RichTextEditor from "./RichTextEditor";
+import ScheduleSendMenu from "./ScheduleSendMenu";
 
 export default function ComposePanel() {
 	const { mailboxId, folder } = useParams<{
@@ -33,9 +36,13 @@ export default function ComposePanel() {
 		formTitle,
 		handleSaveDraft,
 		handleSend,
+		handleScheduleSend,
 		closeCompose,
 		closePanel,
 	} = useComposeForm(mailboxId, folder);
+
+	const { data: contacts = [] } = useContacts(mailboxId);
+	const contactsListId = useId();
 
 	return (
 		<div className="flex flex-col h-full bg-kumo-base">
@@ -62,6 +69,13 @@ export default function ComposePanel() {
 			>
 				<div className="p-4 md:p-6 space-y-4">
 					{error && <Banner variant="error" text={error} />}
+					<datalist id={contactsListId}>
+						{contacts.map((contact) => (
+							<option key={contact.email} value={contact.email}>
+								{contact.name || contact.email}
+							</option>
+						))}
+					</datalist>
 
 					<div className="space-y-3">
 						<div className="flex items-center gap-2">
@@ -75,6 +89,7 @@ export default function ComposePanel() {
 									size="sm"
 									value={to}
 									onChange={(e) => setTo(e.target.value)}
+									list={contactsListId}
 									required
 								/>
 								{!showCcBcc && (
@@ -100,6 +115,7 @@ export default function ComposePanel() {
 										size="sm"
 										value={cc}
 										onChange={(e) => setCc(e.target.value)}
+										list={contactsListId}
 										placeholder="Separate multiple addresses with commas"
 									/>
 								</div>
@@ -117,6 +133,7 @@ export default function ComposePanel() {
 										size="sm"
 										value={bcc}
 										onChange={(e) => setBcc(e.target.value)}
+										list={contactsListId}
 										placeholder="Separate multiple addresses with commas"
 									/>
 								</div>
@@ -166,6 +183,10 @@ export default function ComposePanel() {
 							>
 								{isSavingDraft ? "Saving..." : "Save as Draft"}
 							</Button>
+							<ScheduleSendMenu
+								disabled={isSavingDraft || isSending}
+								onSchedule={(date) => handleScheduleSend(date, closePanel)}
+							/>
 							<Button
 								type="submit"
 								variant="primary"

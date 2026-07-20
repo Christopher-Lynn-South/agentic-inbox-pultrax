@@ -12,8 +12,9 @@ import EmailPanelToolbar from "~/components/email-panel/EmailPanelToolbar";
 import SingleMessageView from "~/components/email-panel/SingleMessageView";
 import ThreadMessage from "~/components/email-panel/ThreadMessage";
 import { splitEmailList, toEmailListValue } from "~/lib/utils";
+import { formatDueDate } from "~/lib/snooze";
 import api from "~/services/api";
-import { useDeleteEmail, useEmail, useMoveEmail, useReplyToEmail, useSendEmail, useThreadReplies, useUpdateEmail } from "~/queries/emails";
+import { useCancelScheduledSend, useDeleteEmail, useEmail, useMoveEmail, useReplyToEmail, useSendEmail, useSnoozeEmail, useThreadReplies, useUnsnoozeEmail, useUpdateEmail } from "~/queries/emails";
 import { useFolders } from "~/queries/folders";
 import { useMailbox } from "~/queries/mailboxes";
 import { useUIStore } from "~/hooks/useUIStore";
@@ -51,6 +52,11 @@ export default function EmailPanel({ emailId }: { emailId: string }) {
 	const [expandedMessages, setExpandedMessages] = useState<Set<string>>(new Set());
 	const [previewImage, setPreviewImage] = useState<{ url: string; filename: string } | null>(null);
 	const isDraftFolder = folder === Folders.DRAFT;
+	const isSnoozedFolder = folder === Folders.SNOOZED;
+	const isScheduledFolder = folder === Folders.SCHEDULED;
+	const snoozeMut = useSnoozeEmail();
+	const unsnoozeMut = useUnsnoozeEmail();
+	const cancelScheduleMut = useCancelScheduledSend();
 
 	const threadReplies = useMemo(() => {
 		if (!threadRepliesRaw || !email) return [];
@@ -83,11 +89,45 @@ export default function EmailPanel({ emailId }: { emailId: string }) {
 		return nonDrafts.length > 0 ? nonDrafts[0] : email;
 	}, [allMessages, draftMessageIds, currentMailbox?.email, email]);
 
-	const moveToFolders = useMemo(() => { const cur = folder || email?.folder_id; return folders.filter((f) => f.id !== cur); }, [folders, folder, email?.folder_id]);
+	// Snoozed/Scheduled are timer-managed — not valid manual move targets.
+	const moveToFolders = useMemo(() => {
+		const cur = folder || email?.folder_id;
+		return folders.filter((f) => f.id !== cur && f.id !== Folders.SNOOZED && f.id !== Folders.SCHEDULED);
+	}, [folders, folder, email?.folder_id]);
 
 	if (!email) return <EmailPanelSkeleton />;
 
 	const toggleStar = () => { if (mailboxId) updateEmail.mutate({ mailboxId, id: email.id, data: { starred: !email.starred } }); };
+	const handleSnooze = async (until: Date) => {
+		if (!mailboxId) return;
+		try {
+			await snoozeMut.mutateAsync({ mailboxId, id: email.id, until: until.toISOString() });
+			toastManager.add({ title: `Snoozed until ${formatDueDate(until.toISOString())}` });
+			closePanel();
+		} catch (err) {
+			toastManager.add({ title: (err instanceof Error ? err.message : null) || "Failed to snooze", variant: "error" });
+		}
+	};
+	const handleUnsnooze = async () => {
+		if (!mailboxId) return;
+		try {
+			await unsnoozeMut.mutateAsync({ mailboxId, id: email.id });
+			toastManager.add({ title: "Moved back to inbox" });
+			closePanel();
+		} catch (err) {
+			toastManager.add({ title: (err instanceof Error ? err.message : null) || "Failed to unsnooze", variant: "error" });
+		}
+	};
+	const handleCancelSchedule = async () => {
+		if (!mailboxId) return;
+		try {
+			await cancelScheduleMut.mutateAsync({ mailboxId, id: email.id });
+			toastManager.add({ title: "Scheduled send cancelled — moved to Drafts" });
+			closePanel();
+		} catch (err) {
+			toastManager.add({ title: (err instanceof Error ? err.message : null) || "Failed to cancel", variant: "error" });
+		}
+	};
 	const handleMove = (folderId: string) => { if (mailboxId) { moveEmailMut.mutate({ mailboxId, id: email.id, folderId }); closePanel(); } };
 	const handleDelete = () => { if (mailboxId) { if (!window.confirm("Are you sure you want to delete this email?")) return; deleteEmailMut.mutate({ mailboxId, id: email.id }); closePanel(); } };
 
@@ -145,8 +185,13 @@ export default function EmailPanel({ emailId }: { emailId: string }) {
 				email={email}
 				mailboxId={mailboxId}
 				isDraftFolder={isDraftFolder}
+				isSnoozedFolder={isSnoozedFolder}
+				isScheduledFolder={isScheduledFolder}
 				isSending={isSending}
 				moveToFolders={moveToFolders}
+				onSnooze={handleSnooze}
+				onUnsnooze={handleUnsnooze}
+				onCancelSchedule={handleCancelSchedule}
 				onBack={closePanel}
 				onSendDraft={() => handleSendDraft()}
 				onEditDraft={() => handleEditDraft()}

@@ -4,7 +4,7 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import api from "~/services/api";
-import type { Email } from "~/types";
+import type { BulkEmailAction, Email } from "~/types";
 import { queryKeys } from "./keys";
 
 // ---------- Types ----------
@@ -225,6 +225,55 @@ export function useMoveEmail() {
 			folderId,
 		}: { mailboxId: string; id: string; folderId: string }) =>
 			api.moveEmail(mailboxId, id, folderId),
+		onSuccess: (_data, { mailboxId }) => invalidate(mailboxId),
+	});
+}
+
+export function useSnoozeEmail() {
+	const invalidate = useInvalidateEmailData();
+	return useMutation({
+		mutationFn: ({
+			mailboxId,
+			id,
+			until,
+		}: { mailboxId: string; id: string; until: string }) =>
+			api.snoozeEmail(mailboxId, id, until),
+		onSuccess: (_data, { mailboxId }) => invalidate(mailboxId),
+	});
+}
+
+export function useUnsnoozeEmail() {
+	const invalidate = useInvalidateEmailData();
+	return useMutation({
+		mutationFn: ({ mailboxId, id }: { mailboxId: string; id: string }) =>
+			api.unsnoozeEmail(mailboxId, id),
+		onSuccess: (_data, { mailboxId }) => invalidate(mailboxId),
+	});
+}
+
+export function useCancelScheduledSend() {
+	const invalidate = useInvalidateEmailData();
+	return useMutation({
+		mutationFn: ({ mailboxId, id }: { mailboxId: string; id: string }) =>
+			api.cancelScheduledSend(mailboxId, id),
+		onSuccess: (_data, { mailboxId }) => invalidate(mailboxId),
+	});
+}
+
+export function useBulkEmailAction() {
+	const invalidate = useInvalidateEmailData();
+	return useMutation({
+		mutationFn: ({
+			mailboxId,
+			ids,
+			action,
+			folderId,
+		}: {
+			mailboxId: string;
+			ids: string[];
+			action: BulkEmailAction;
+			folderId?: string;
+		}) => api.bulkEmailAction(mailboxId, ids, action, folderId),
 		onSuccess: (_data, { mailboxId }) => invalidate(mailboxId),
 	});
 }

@@ -10,6 +10,8 @@ import * as schema from "../db/schema";
 import { Folders } from "../../shared/folders";
 import type { Env } from "../types";
 import { applyMigrations, mailboxMigrations } from "./migrations";
+import { sendEmail } from "../email-sender";
+import { buildThreadingHeaders } from "../lib/email-helpers";
 
 /**
  * SQL expression to normalize email subjects by stripping common
@@ -87,6 +89,7 @@ interface EmailData {
 	thread_id?: string | null;
 	message_id?: string | null;
 	raw_headers?: string | null;
+	due_at?: string | null;
 }
 
 interface AttachmentData {
@@ -160,6 +163,7 @@ export class MailboxDO extends DurableObject<Env> {
 				email_references: schema.emails.email_references,
 				thread_id: schema.emails.thread_id,
 				folder_id: schema.emails.folder_id,
+				due_at: schema.emails.due_at,
 				snippet: sql<string>`SUBSTR(${schema.emails.body}, 1, 300)`,
 			})
 			.from(schema.emails)
@@ -266,7 +270,7 @@ export class MailboxDO extends DurableObject<Env> {
 				SELECT
 					lp.id, lp.subject, lp.sender, lp.recipient, lp.date,
 					lp.read, lp.starred, lp.thread_id, lp.folder_id,
-					lp.in_reply_to, lp.email_references,
+					lp.in_reply_to, lp.email_references, lp.due_at,
 					SUBSTR(lp.body, 1, 300) as snippet,
 					ds.thread_count, ds.thread_unread_count, ds.participants
 				FROM latest_per_group lp
@@ -354,7 +358,7 @@ export class MailboxDO extends DurableObject<Env> {
 			SELECT
 				lif.id, lif.subject, lif.sender, lif.recipient, lif.date,
 				lif.read, lif.starred, lif.thread_id, lif.folder_id,
-				lif.in_reply_to, lif.email_references,
+				lif.in_reply_to, lif.email_references, lif.due_at,
 				SUBSTR(lif.body, 1, 300) as snippet,
 				cs.thread_count, cs.thread_unread_count, cs.participants,
 				CASE WHEN lmc.folder_id != (SELECT id FROM folders WHERE name = 'sent' LIMIT 1)
@@ -640,11 +644,13 @@ export class MailboxDO extends DurableObject<Env> {
 
 		if (!folder) return false;
 
+		// Clear any snooze/schedule timer when an email is manually moved.
 		this.db
 			.update(schema.emails)
-			.set({ folder_id: folderId })
+			.set({ folder_id: folderId, due_at: null })
 			.where(eq(schema.emails.id, id))
 			.run();
+		await this.refreshDueAlarm();
 
 		return true;
 	}
@@ -862,11 +868,384 @@ export class MailboxDO extends DurableObject<Env> {
 				thread_id: email.thread_id ?? null,
 				message_id: email.message_id ?? null,
 				raw_headers: email.raw_headers ?? null,
+				due_at: email.due_at ?? null,
 			})
 			.run();
 
 		if (attachments.length > 0) {
 			this.db.insert(schema.attachments).values(attachments).run();
 		}
+
+		if (email.due_at) {
+			await this.refreshDueAlarm();
+		}
 	}
+
+	// ── Snooze & scheduled send (DO alarms) ────────────────────────
+
+	/**
+	 * Snooze an email: move it to the Snoozed folder until `until`
+	 * (ISO timestamp), at which point the alarm returns it to the inbox
+	 * and marks it unread so it resurfaces at the top.
+	 */
+	async snoozeEmail(id: string, until: string) {
+		const parsed = Date.parse(until);
+		if (Number.isNaN(parsed)) {
+			return { error: "Invalid snooze time" };
+		}
+		if (parsed <= Date.now()) {
+			return { error: "Snooze time must be in the future" };
+		}
+
+		const email = this.db
+			.select({ id: schema.emails.id, folder_id: schema.emails.folder_id })
+			.from(schema.emails)
+			.where(eq(schema.emails.id, id))
+			.get();
+		if (!email) return { error: "Email not found" };
+		if (email.folder_id === Folders.DRAFT || email.folder_id === Folders.SCHEDULED) {
+			return { error: "Drafts and scheduled emails cannot be snoozed" };
+		}
+
+		const untilIso = new Date(parsed).toISOString();
+		this.db
+			.update(schema.emails)
+			.set({ folder_id: Folders.SNOOZED, due_at: untilIso })
+			.where(eq(schema.emails.id, id))
+			.run();
+
+		await this.refreshDueAlarm();
+		return { status: "snoozed", id, until: untilIso };
+	}
+
+	/** Return a snoozed email to the inbox immediately. */
+	async unsnoozeEmail(id: string) {
+		const email = this.db
+			.select({ id: schema.emails.id, folder_id: schema.emails.folder_id })
+			.from(schema.emails)
+			.where(eq(schema.emails.id, id))
+			.get();
+		if (!email || email.folder_id !== Folders.SNOOZED) {
+			return { error: "Email is not snoozed" };
+		}
+		this.db
+			.update(schema.emails)
+			.set({ folder_id: Folders.INBOX, due_at: null })
+			.where(eq(schema.emails.id, id))
+			.run();
+		await this.refreshDueAlarm();
+		return { status: "unsnoozed", id };
+	}
+
+	/**
+	 * Cancel a scheduled send: the email moves back to Drafts so it can
+	 * be edited and re-sent (or discarded).
+	 */
+	async cancelScheduledSend(id: string) {
+		const email = this.db
+			.select({ id: schema.emails.id, folder_id: schema.emails.folder_id })
+			.from(schema.emails)
+			.where(eq(schema.emails.id, id))
+			.get();
+		if (!email || email.folder_id !== Folders.SCHEDULED) {
+			return { error: "Email is not scheduled" };
+		}
+		this.db
+			.update(schema.emails)
+			.set({ folder_id: Folders.DRAFT, due_at: null })
+			.where(eq(schema.emails.id, id))
+			.run();
+		await this.refreshDueAlarm();
+		return { status: "cancelled", id };
+	}
+
+	/**
+	 * (Re)arm the DO alarm to fire at the earliest pending due_at across
+	 * snoozed and scheduled emails. Clears the alarm when nothing is due.
+	 */
+	async refreshDueAlarm() {
+		const row = [
+			...this.ctx.storage.sql.exec(
+				`SELECT MIN(due_at) as next_due FROM emails
+				 WHERE due_at IS NOT NULL AND folder_id IN (?1, ?2)`,
+				Folders.SNOOZED,
+				Folders.SCHEDULED,
+			),
+		][0] as { next_due: string | null } | undefined;
+
+		if (row?.next_due) {
+			const at = Math.max(Date.parse(row.next_due), Date.now() + 1000);
+			await this.ctx.storage.setAlarm(at);
+		} else {
+			await this.ctx.storage.deleteAlarm();
+		}
+	}
+
+	/**
+	 * Alarm handler: wake snoozed emails whose time has come, and send
+	 * scheduled emails that are due. Re-arms itself for the next due item.
+	 */
+	async alarm() {
+		const now = new Date().toISOString();
+
+		// 1. Return due snoozed emails to the inbox, unread so they resurface.
+		this.ctx.storage.sql.exec(
+			`UPDATE emails SET folder_id = ?1, due_at = NULL, read = 0
+			 WHERE folder_id = ?2 AND due_at IS NOT NULL AND due_at <= ?3`,
+			Folders.INBOX,
+			Folders.SNOOZED,
+			now,
+		);
+
+		// 2. Send due scheduled emails.
+		const dueScheduled = [
+			...this.ctx.storage.sql.exec(
+				`SELECT * FROM emails
+				 WHERE folder_id = ?1 AND due_at IS NOT NULL AND due_at <= ?2`,
+				Folders.SCHEDULED,
+				now,
+			),
+		] as any[];
+
+		for (const email of dueScheduled) {
+			try {
+				await this.#sendScheduledEmail(email);
+				this.ctx.storage.sql.exec(
+					`UPDATE emails SET folder_id = ?1, due_at = NULL, read = 1, date = ?2 WHERE id = ?3`,
+					Folders.SENT,
+					new Date().toISOString(),
+					email.id,
+				);
+			} catch (e) {
+				console.error(
+					`Scheduled send failed for ${email.id}:`,
+					(e as Error).message,
+				);
+				// Park the email back in Drafts so the user can retry manually
+				// instead of silently retrying (and potentially double-sending).
+				this.ctx.storage.sql.exec(
+					`UPDATE emails SET folder_id = ?1, due_at = NULL WHERE id = ?2`,
+					Folders.DRAFT,
+					email.id,
+				);
+			}
+		}
+
+		await this.refreshDueAlarm();
+	}
+
+	/** Deliver a scheduled email row via the Email Service binding. */
+	async #sendScheduledEmail(email: any) {
+		const splitAddresses = (value: string | null): string[] =>
+			(value || "")
+				.split(",")
+				.map((a: string) => a.trim())
+				.filter(Boolean);
+
+		const to = splitAddresses(email.recipient);
+		if (to.length === 0) throw new Error("Scheduled email has no recipient");
+		const cc = splitAddresses(email.cc);
+		const bcc = splitAddresses(email.bcc);
+
+		// Re-attach any stored attachments from R2 as base64.
+		const attachmentRows = [
+			...this.ctx.storage.sql.exec(
+				`SELECT * FROM attachments WHERE email_id = ?1`,
+				email.id,
+			),
+		] as any[];
+		const attachments: {
+			content: string;
+			filename: string;
+			type: string;
+			disposition: "attachment" | "inline";
+			contentId?: string;
+		}[] = [];
+		for (const att of attachmentRows) {
+			const obj = await this.env.BUCKET.get(
+				`attachments/${email.id}/${att.id}/${att.filename}`,
+			);
+			if (!obj) continue;
+			const buffer = await obj.arrayBuffer();
+			attachments.push({
+				content: base64Encode(buffer),
+				filename: att.filename,
+				type: att.mimetype,
+				disposition: att.disposition === "inline" ? "inline" : "attachment",
+				...(att.content_id ? { contentId: att.content_id } : {}),
+			});
+		}
+
+		let references: string[] = [];
+		if (email.email_references) {
+			try {
+				references = JSON.parse(email.email_references);
+			} catch {
+				// Malformed references JSON — send without them
+			}
+		}
+
+		await sendEmail(this.env.EMAIL, {
+			to: to.length === 1 ? to[0] : to,
+			...(cc.length > 0 ? { cc: cc.length === 1 ? cc[0] : cc } : {}),
+			...(bcc.length > 0 ? { bcc: bcc.length === 1 ? bcc[0] : bcc } : {}),
+			from: email.sender,
+			subject: email.subject || "(no subject)",
+			html: email.body || "",
+			...(attachments.length > 0 ? { attachments } : {}),
+			...(email.in_reply_to
+				? { headers: buildThreadingHeaders(email.in_reply_to, references) }
+				: {}),
+		});
+	}
+
+	// ── Bulk operations ────────────────────────────────────────────
+
+	async bulkUpdateEmails(
+		ids: string[],
+		{ read, starred }: { read?: boolean; starred?: boolean },
+	) {
+		if (ids.length === 0) return { status: "updated", count: 0 };
+		const sets: string[] = [];
+		if (read !== undefined) sets.push(`read = ${read ? 1 : 0}`);
+		if (starred !== undefined) sets.push(`starred = ${starred ? 1 : 0}`);
+		if (sets.length === 0) return { status: "updated", count: 0 };
+
+		const placeholders = ids.map((_, i) => `?${i + 1}`).join(",");
+		this.ctx.storage.sql.exec(
+			`UPDATE emails SET ${sets.join(", ")} WHERE id IN (${placeholders})`,
+			...ids,
+		);
+		return { status: "updated", count: ids.length };
+	}
+
+	async bulkMoveEmails(ids: string[], folderId: string) {
+		if (ids.length === 0) return { status: "moved", count: 0 };
+		const folder = this.db
+			.select({ id: schema.folders.id })
+			.from(schema.folders)
+			.where(eq(schema.folders.id, folderId))
+			.get();
+		if (!folder) return { error: "Folder not found" };
+
+		const placeholders = ids.map((_, i) => `?${i + 2}`).join(",");
+		this.ctx.storage.sql.exec(
+			`UPDATE emails SET folder_id = ?1, due_at = NULL WHERE id IN (${placeholders})`,
+			folderId,
+			...ids,
+		);
+		await this.refreshDueAlarm();
+		return { status: "moved", count: ids.length };
+	}
+
+	/**
+	 * Delete multiple emails. Returns attachment metadata so the caller
+	 * can clean up the R2 blobs.
+	 */
+	async bulkDeleteEmails(ids: string[]) {
+		if (ids.length === 0) return [];
+		const placeholders = ids.map((_, i) => `?${i + 1}`).join(",");
+		const attachmentRows = [
+			...this.ctx.storage.sql.exec(
+				`SELECT id, email_id, filename FROM attachments WHERE email_id IN (${placeholders})`,
+				...ids,
+			),
+		] as { id: string; email_id: string; filename: string }[];
+
+		this.ctx.storage.sql.exec(
+			`DELETE FROM emails WHERE id IN (${placeholders})`,
+			...ids,
+		);
+		return attachmentRows;
+	}
+
+	// ── Contacts ───────────────────────────────────────────────────
+
+	/**
+	 * Record contacts seen in email traffic (senders of received mail,
+	 * recipients of sent mail). Keeps a frequency count for ranking.
+	 */
+	async upsertContacts(entries: { email: string; name?: string | null }[]) {
+		const now = new Date().toISOString();
+		for (const entry of entries) {
+			const email = entry.email.trim().toLowerCase();
+			if (!email || !email.includes("@")) continue;
+			this.ctx.storage.sql.exec(
+				`INSERT INTO contacts (email, name, times_seen, last_seen)
+				 VALUES (?1, ?2, 1, ?3)
+				 ON CONFLICT(email) DO UPDATE SET
+				   times_seen = times_seen + 1,
+				   last_seen = ?3,
+				   name = COALESCE(NULLIF(?2, ''), contacts.name)`,
+				email,
+				entry.name?.trim() || "",
+				now,
+			);
+		}
+		return { status: "ok", count: entries.length };
+	}
+
+	/** List contacts, optionally filtered, ranked by frequency + recency. */
+	async getContacts(query?: string, limit = 20) {
+		const cappedLimit = Math.min(Math.max(limit, 1), 100);
+		if (query) {
+			return [
+				...this.ctx.storage.sql.exec(
+					`SELECT email, name, times_seen, last_seen FROM contacts
+					 WHERE email LIKE ?1 OR name LIKE ?1
+					 ORDER BY times_seen DESC, last_seen DESC LIMIT ?2`,
+					`%${query}%`,
+					cappedLimit,
+				),
+			];
+		}
+		return [
+			...this.ctx.storage.sql.exec(
+				`SELECT email, name, times_seen, last_seen FROM contacts
+				 ORDER BY times_seen DESC, last_seen DESC LIMIT ?1`,
+				cappedLimit,
+			),
+		];
+	}
+
+	// ── Auto-reply tracking ────────────────────────────────────────
+
+	/**
+	 * Loop/flood protection for auto-replies: returns true (and records
+	 * the reply) only if we haven't auto-replied to this sender in the
+	 * last 24 hours.
+	 */
+	async shouldAutoReply(sender: string): Promise<boolean> {
+		const normalized = sender.trim().toLowerCase();
+		if (!normalized) return false;
+		const row = [
+			...this.ctx.storage.sql.exec(
+				`SELECT replied_at FROM auto_replies WHERE sender = ?1`,
+				normalized,
+			),
+		][0] as { replied_at: string } | undefined;
+
+		const dayAgo = Date.now() - 24 * 60 * 60 * 1000;
+		if (row && Date.parse(row.replied_at) > dayAgo) {
+			return false;
+		}
+		this.ctx.storage.sql.exec(
+			`INSERT INTO auto_replies (sender, replied_at) VALUES (?1, ?2)
+			 ON CONFLICT(sender) DO UPDATE SET replied_at = ?2`,
+			normalized,
+			new Date().toISOString(),
+		);
+		return true;
+	}
+}
+
+/** Chunked base64 encoding that avoids call-stack limits on large buffers. */
+function base64Encode(buffer: ArrayBuffer): string {
+	const bytes = new Uint8Array(buffer);
+	let binary = "";
+	const chunkSize = 0x8000;
+	for (let i = 0; i < bytes.length; i += chunkSize) {
+		binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+	}
+	return btoa(binary);
 }

@@ -2,7 +2,7 @@
 // Licensed under the Apache 2.0 license found in the LICENSE file or at:
 //     https://opensource.org/licenses/Apache-2.0
 
-import type { Email, Folder, Mailbox } from "~/types";
+import type { BulkEmailAction, Contact, Email, Folder, Mailbox } from "~/types";
 
 const REQUEST_TIMEOUT_MS = 30_000;
 
@@ -123,6 +123,26 @@ const api = {
 		del<void>(`/api/v1/mailboxes/${mailboxId}/emails/${id}`),
 	moveEmail: (mailboxId: string, id: string, folderId: string) =>
 		post<void>(`/api/v1/mailboxes/${mailboxId}/emails/${id}/move`, { folderId }),
+	snoozeEmail: (mailboxId: string, id: string, until: string) =>
+		post<{ status: string; until: string }>(`/api/v1/mailboxes/${mailboxId}/emails/${id}/snooze`, { until }),
+	unsnoozeEmail: (mailboxId: string, id: string) =>
+		post<{ status: string }>(`/api/v1/mailboxes/${mailboxId}/emails/${id}/unsnooze`),
+	cancelScheduledSend: (mailboxId: string, id: string) =>
+		post<{ status: string }>(`/api/v1/mailboxes/${mailboxId}/emails/${id}/cancel-schedule`),
+	bulkEmailAction: (
+		mailboxId: string,
+		ids: string[],
+		action: BulkEmailAction,
+		folderId?: string,
+	) =>
+		post<{ status: string; count: number }>(
+			`/api/v1/mailboxes/${mailboxId}/emails/bulk`,
+			{ ids, action, folderId },
+		),
+	listContacts: (mailboxId: string, query?: string) =>
+		get<Contact[]>(`/api/v1/mailboxes/${mailboxId}/contacts`, {
+			params: query ? { query } : undefined,
+		}),
 	getThread: (mailboxId: string, threadId: string, opts?: { signal?: AbortSignal }) =>
 		get<Email[]>(`/api/v1/mailboxes/${mailboxId}/threads/${threadId}`, { signal: opts?.signal }),
 	markThreadRead: (mailboxId: string, threadId: string) =>

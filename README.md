@@ -38,10 +38,17 @@ https://github.com/cloudflare/agentic-inbox/issues/4#issuecomment-4269118513
 ## Features
 
 - **Full email client** — Send and receive emails via Cloudflare Email Routing with a rich text composer, reply/forward threading, folder organization, search, and attachments
+- **Snooze** — Hide an email until later (presets or a custom time); a Durable Object alarm returns it to the inbox marked unread when the time comes
+- **Scheduled send** — "Send later" from the composer; scheduled emails wait in a dedicated folder and can be cancelled back to Drafts before delivery
+- **Auto-reply & forwarding** — Per-mailbox vacation responder (RFC 3834 compliant, one reply per sender per 24h, skips mailing lists and automated senders) and automatic forwarding of inbound mail
+- **Contacts autocomplete** — Contacts are collected automatically from mail traffic and suggested in the composer's To/CC/BCC fields
+- **Bulk actions** — Multi-select emails to mark read/unread, archive, trash, or delete in one go
+- **One-click unsubscribe** — `List-Unsubscribe` headers are detected and surfaced as an Unsubscribe link on newsletters
+- **Keyboard shortcuts** — `j`/`k` to move through the list, `e` archive, `s` star, `u` toggle read, `c` compose
 - **Per-mailbox isolation** — Each mailbox runs in its own Durable Object with SQLite storage and R2 for attachments
-- **Built-in AI agent** — Side panel with 9 email tools for reading, searching, drafting, and sending
+- **Built-in AI agent** — Side panel with 10 email tools for reading, searching, drafting, snoozing, and sending
 - **Auto-draft on new email** — Agent automatically reads inbound emails and generates draft replies, always requiring explicit confirmation before sending
-- **Configurable and persistent** — Custom system prompts per mailbox, persistent chat history, streaming markdown responses, and tool call visibility
+- **Configurable and persistent** — Custom system prompts, signature, auto-reply, and forwarding per mailbox, persistent chat history, streaming markdown responses, and tool call visibility
 
 ## Stack
 

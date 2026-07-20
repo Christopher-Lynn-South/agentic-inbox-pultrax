@@ -29,6 +29,21 @@ export const emails = sqliteTable("emails", {
 	thread_id: text("thread_id"),
 	message_id: text("message_id"),
 	raw_headers: text("raw_headers"),
+	// When set: for snoozed emails, the time to return to the inbox;
+	// for scheduled emails, the time to actually send.
+	due_at: text("due_at"),
+});
+
+export const contacts = sqliteTable("contacts", {
+	email: text("email").primaryKey(),
+	name: text("name"),
+	times_seen: integer("times_seen").notNull().default(1),
+	last_seen: text("last_seen").notNull(),
+});
+
+export const autoReplies = sqliteTable("auto_replies", {
+	sender: text("sender").primaryKey(),
+	replied_at: text("replied_at").notNull(),
 });
 
 export const attachments = sqliteTable("attachments", {

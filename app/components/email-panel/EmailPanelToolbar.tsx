@@ -8,7 +8,9 @@ import {
 	ArrowBendUpLeftIcon,
 	ArrowBendUpRightIcon,
 	ArrowLeftIcon,
+	BellRingingIcon,
 	ChatCircleIcon,
+	ClockIcon,
 	CodeIcon,
 	EnvelopeOpenIcon,
 	EnvelopeSimpleIcon,
@@ -17,14 +19,18 @@ import {
 	PencilSimpleIcon,
 	StarIcon,
 	TrashIcon,
+	XCircleIcon,
 	XIcon,
 } from "@phosphor-icons/react";
 import type { Folder, Email } from "~/types";
+import { getTimePresets, toDatetimeLocalValue } from "~/lib/snooze";
 
 interface EmailPanelToolbarProps {
 	email: Email;
 	mailboxId?: string;
 	isDraftFolder: boolean;
+	isSnoozedFolder?: boolean;
+	isScheduledFolder?: boolean;
 	isSending: boolean;
 	moveToFolders: Folder[];
 	lastReceivedMessage?: Email;
@@ -37,6 +43,9 @@ interface EmailPanelToolbarProps {
 	onToggleStar: () => void;
 	onToggleRead: () => void;
 	onMove: (folderId: string) => void;
+	onSnooze?: (until: Date) => void;
+	onUnsnooze?: () => void;
+	onCancelSchedule?: () => void;
 	onViewSource: () => void;
 	onDelete: () => void;
 }
@@ -45,6 +54,8 @@ export default function EmailPanelToolbar({
 	email,
 	mailboxId,
 	isDraftFolder,
+	isSnoozedFolder,
+	isScheduledFolder,
 	isSending,
 	moveToFolders,
 	onBack,
@@ -56,6 +67,9 @@ export default function EmailPanelToolbar({
 	onToggleStar,
 	onToggleRead,
 	onMove,
+	onSnooze,
+	onUnsnooze,
+	onCancelSchedule,
 	onViewSource,
 	onDelete,
 }: EmailPanelToolbarProps) {
@@ -91,6 +105,15 @@ export default function EmailPanelToolbar({
 						Edit
 					</Button>
 				</>
+			) : isScheduledFolder ? (
+				<Button
+					variant="secondary"
+					size="sm"
+					icon={<XCircleIcon size={16} />}
+					onClick={onCancelSchedule}
+				>
+					Cancel send
+				</Button>
 			) : (
 				<>
 					<Tooltip content="Reply" side="bottom" asChild>
@@ -156,6 +179,22 @@ export default function EmailPanelToolbar({
 				/>
 			</Tooltip>
 
+			{!isDraftFolder && !isScheduledFolder && !isSnoozedFolder && onSnooze && (
+				<SnoozeMenu onSnooze={onSnooze} />
+			)}
+			{isSnoozedFolder && onUnsnooze && (
+				<Tooltip content="Unsnooze (back to inbox)" side="bottom" asChild>
+					<Button
+						variant="ghost"
+						shape="square"
+						size="sm"
+						icon={<BellRingingIcon size={18} />}
+						onClick={onUnsnooze}
+						aria-label="Unsnooze"
+					/>
+				</Tooltip>
+			)}
+
 			<MoveToFolderMenu folders={moveToFolders} onMove={onMove} />
 
 			<div className="ml-auto flex items-center gap-0.5">
@@ -191,6 +230,82 @@ export default function EmailPanelToolbar({
 					/>
 				</Tooltip>
 			</div>
+		</div>
+	);
+}
+
+function SnoozeMenu({ onSnooze }: { onSnooze: (until: Date) => void }) {
+	const [open, setOpen] = useState(false);
+	const [customValue, setCustomValue] = useState("");
+	const ref = useRef<HTMLDivElement>(null);
+
+	useEffect(() => {
+		if (!open) return;
+		const handler = (e: MouseEvent) => {
+			if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+		};
+		document.addEventListener("mousedown", handler);
+		return () => document.removeEventListener("mousedown", handler);
+	}, [open]);
+
+	const presets = getTimePresets();
+
+	const pick = (date: Date) => {
+		onSnooze(date);
+		setOpen(false);
+	};
+
+	return (
+		<div ref={ref} className="relative">
+			<Tooltip content="Snooze" side="bottom" asChild>
+				<Button
+					variant="ghost"
+					shape="square"
+					size="sm"
+					icon={<ClockIcon size={18} />}
+					onClick={() => {
+						setCustomValue(toDatetimeLocalValue(new Date(Date.now() + 60 * 60 * 1000)));
+						setOpen((o) => !o);
+					}}
+					aria-label="Snooze"
+				/>
+			</Tooltip>
+			{open && (
+				<div className="absolute top-full left-0 z-50 mt-1 min-w-[220px] rounded-lg border border-kumo-line bg-kumo-elevated shadow-lg py-1">
+					<div className="px-3 py-1.5 text-xs font-medium text-kumo-subtle">Snooze until</div>
+					<div className="h-px bg-kumo-line my-1" />
+					{presets.map((p) => (
+						<button
+							key={p.label}
+							type="button"
+							className="w-full flex items-center justify-between gap-3 text-left px-3 py-1.5 text-sm text-kumo-default hover:bg-kumo-overlay transition-colors"
+							onClick={() => pick(p.date)}
+						>
+							<span>{p.label}</span>
+							<span className="text-xs text-kumo-subtle">{p.hint}</span>
+						</button>
+					))}
+					<div className="h-px bg-kumo-line my-1" />
+					<div className="px-3 py-1.5 space-y-1.5">
+						<div className="text-xs font-medium text-kumo-subtle">Pick a time</div>
+						<input
+							type="datetime-local"
+							className="w-full text-sm rounded-md border border-kumo-line bg-transparent px-2 py-1 text-kumo-default"
+							value={customValue}
+							onChange={(e) => setCustomValue(e.target.value)}
+						/>
+						<Button
+							variant="secondary"
+							size="sm"
+							className="w-full"
+							disabled={!customValue || new Date(customValue).getTime() <= Date.now()}
+							onClick={() => customValue && pick(new Date(customValue))}
+						>
+							Snooze
+						</Button>
+					</div>
+				</div>
+			)}
 		</div>
 	);
 }

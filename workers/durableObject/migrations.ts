@@ -168,4 +168,36 @@ export const mailboxMigrations: Migration[] = [
             CREATE INDEX IF NOT EXISTS idx_emails_folder_date ON emails(folder_id, date DESC);
         `,
 	},
+	{
+		// INSERT OR IGNORE: a pre-existing custom folder named "Snoozed"/
+		// "Scheduled" must not make the migration (and the whole DO) fail.
+		name: "9_add_snooze_and_scheduled",
+		sql: txn(`
+            ALTER TABLE emails ADD COLUMN due_at TEXT;
+            CREATE INDEX idx_emails_due_at ON emails(due_at);
+            INSERT OR IGNORE INTO folders (id, name, is_deletable) VALUES
+                ('snoozed', 'Snoozed', 0),
+                ('scheduled', 'Scheduled', 0);
+        `),
+	},
+	{
+		name: "10_add_contacts",
+		sql: txn(`
+            CREATE TABLE contacts (
+                email TEXT PRIMARY KEY,
+                name TEXT,
+                times_seen INTEGER NOT NULL DEFAULT 1,
+                last_seen TEXT NOT NULL
+            );
+        `),
+	},
+	{
+		name: "11_add_auto_replies",
+		sql: txn(`
+            CREATE TABLE auto_replies (
+                sender TEXT PRIMARY KEY,
+                replied_at TEXT NOT NULL
+            );
+        `),
+	},
 ];

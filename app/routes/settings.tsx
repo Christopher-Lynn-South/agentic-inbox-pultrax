@@ -2,8 +2,8 @@
 // Licensed under the Apache 2.0 license found in the LICENSE file or at:
 //     https://opensource.org/licenses/Apache-2.0
 
-import { Badge, Button, Input, Loader, useKumoToastManager } from "@cloudflare/kumo";
-import { RobotIcon, ArrowCounterClockwiseIcon } from "@phosphor-icons/react";
+import { Badge, Button, Checkbox, Input, Loader, useKumoToastManager } from "@cloudflare/kumo";
+import { RobotIcon, ArrowCounterClockwiseIcon, ArrowBendUpRightIcon, ChatCenteredTextIcon, PenNibIcon } from "@phosphor-icons/react";
 import { useEffect, useState } from "react";
 import { useParams } from "react-router";
 import { useMailbox, useUpdateMailbox } from "~/queries/mailboxes";
@@ -20,12 +20,26 @@ export default function SettingsRoute() {
 
 	const [displayName, setDisplayName] = useState("");
 	const [agentPrompt, setAgentPrompt] = useState("");
+	const [signatureEnabled, setSignatureEnabled] = useState(false);
+	const [signatureText, setSignatureText] = useState("");
+	const [forwardingEnabled, setForwardingEnabled] = useState(false);
+	const [forwardingEmail, setForwardingEmail] = useState("");
+	const [autoReplyEnabled, setAutoReplyEnabled] = useState(false);
+	const [autoReplySubject, setAutoReplySubject] = useState("");
+	const [autoReplyMessage, setAutoReplyMessage] = useState("");
 	const [isSaving, setIsSaving] = useState(false);
 
 	useEffect(() => {
 		if (mailbox) {
 			setDisplayName(mailbox.settings?.fromName || mailbox.name || "");
 			setAgentPrompt(mailbox.settings?.agentSystemPrompt || "");
+			setSignatureEnabled(mailbox.settings?.signature?.enabled ?? false);
+			setSignatureText(mailbox.settings?.signature?.text || "");
+			setForwardingEnabled(mailbox.settings?.forwarding?.enabled ?? false);
+			setForwardingEmail(mailbox.settings?.forwarding?.email || "");
+			setAutoReplyEnabled(mailbox.settings?.autoReply?.enabled ?? false);
+			setAutoReplySubject(mailbox.settings?.autoReply?.subject || "");
+			setAutoReplyMessage(mailbox.settings?.autoReply?.message || "");
 		}
 	}, [mailbox]);
 
@@ -36,6 +50,13 @@ export default function SettingsRoute() {
 			...mailbox.settings,
 			fromName: displayName,
 			agentSystemPrompt: agentPrompt.trim() || undefined,
+			signature: { enabled: signatureEnabled, text: signatureText },
+			forwarding: { enabled: forwardingEnabled, email: forwardingEmail.trim() },
+			autoReply: {
+				enabled: autoReplyEnabled,
+				subject: autoReplySubject.trim(),
+				message: autoReplyMessage,
+			},
 		};
 		try {
 			await updateMailboxMutation.mutateAsync({ mailboxId, settings });
@@ -81,6 +102,90 @@ export default function SettingsRoute() {
 							onChange={(e) => setDisplayName(e.target.value)}
 						/>
 						<Input label="Email" type="email" value={mailbox.email} disabled />
+					</div>
+				</div>
+
+				{/* Signature */}
+				<div className="rounded-lg border border-kumo-line bg-kumo-base p-5">
+					<div className="flex items-center gap-2 mb-4">
+						<PenNibIcon size={16} weight="duotone" className="text-kumo-subtle" />
+						<span className="text-sm font-medium text-kumo-default">Signature</span>
+					</div>
+					<div className="space-y-3">
+						<Checkbox
+							label="Append a signature to new emails and replies"
+							checked={signatureEnabled}
+							onCheckedChange={setSignatureEnabled}
+						/>
+						{signatureEnabled && (
+							<textarea
+								value={signatureText}
+								onChange={(e) => setSignatureText(e.target.value)}
+								placeholder={"Best regards,\nYour name"}
+								rows={3}
+								className="w-full resize-y rounded-lg border border-kumo-line bg-kumo-recessed px-3 py-2 text-sm text-kumo-default placeholder:text-kumo-subtle focus:outline-none focus:ring-1 focus:ring-kumo-ring"
+							/>
+						)}
+					</div>
+				</div>
+
+				{/* Forwarding */}
+				<div className="rounded-lg border border-kumo-line bg-kumo-base p-5">
+					<div className="flex items-center gap-2 mb-4">
+						<ArrowBendUpRightIcon size={16} weight="duotone" className="text-kumo-subtle" />
+						<span className="text-sm font-medium text-kumo-default">Forwarding</span>
+					</div>
+					<div className="space-y-3">
+						<Checkbox
+							label="Forward incoming emails to another address"
+							checked={forwardingEnabled}
+							onCheckedChange={setForwardingEnabled}
+						/>
+						{forwardingEnabled && (
+							<Input
+								label="Forward to"
+								type="email"
+								placeholder="someone@example.com"
+								value={forwardingEmail}
+								onChange={(e) => setForwardingEmail(e.target.value)}
+							/>
+						)}
+					</div>
+				</div>
+
+				{/* Auto-reply */}
+				<div className="rounded-lg border border-kumo-line bg-kumo-base p-5">
+					<div className="flex items-center gap-2 mb-4">
+						<ChatCenteredTextIcon size={16} weight="duotone" className="text-kumo-subtle" />
+						<span className="text-sm font-medium text-kumo-default">Auto-reply</span>
+					</div>
+					<div className="space-y-3">
+						<Checkbox
+							label="Send an automatic reply to incoming emails"
+							checked={autoReplyEnabled}
+							onCheckedChange={setAutoReplyEnabled}
+						/>
+						{autoReplyEnabled && (
+							<>
+								<Input
+									label="Subject (optional — defaults to Re: original subject)"
+									placeholder="Out of office"
+									value={autoReplySubject}
+									onChange={(e) => setAutoReplySubject(e.target.value)}
+								/>
+								<textarea
+									value={autoReplyMessage}
+									onChange={(e) => setAutoReplyMessage(e.target.value)}
+									placeholder="I'm away right now and will get back to you soon."
+									rows={4}
+									className="w-full resize-y rounded-lg border border-kumo-line bg-kumo-recessed px-3 py-2 text-sm text-kumo-default placeholder:text-kumo-subtle focus:outline-none focus:ring-1 focus:ring-kumo-ring"
+								/>
+								<p className="text-xs text-kumo-subtle">
+									Each sender receives at most one auto-reply per 24 hours.
+									Mailing lists and automated senders are skipped.
+								</p>
+							</>
+						)}
 					</div>
 				</div>
 

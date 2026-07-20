@@ -4,9 +4,12 @@
 
 import { Banner, Button, Dialog, Input, Text } from "@cloudflare/kumo";
 import { FloppyDiskIcon, PaperPlaneTiltIcon } from "@phosphor-icons/react";
+import { useId } from "react";
 import { useParams } from "react-router";
 import { useComposeForm } from "~/hooks/useComposeForm";
+import { useContacts } from "~/queries/contacts";
 import RichTextEditor from "./RichTextEditor";
+import ScheduleSendMenu from "./ScheduleSendMenu";
 import { useUIStore } from "~/hooks/useUIStore";
 
 export default function ComposeEmail() {
@@ -14,7 +17,7 @@ export default function ComposeEmail() {
 		mailboxId: string;
 		folder: string;
 	}>();
-	
+
 	const { isComposeModalOpen, closeComposeModal } = useUIStore();
 
 	const {
@@ -36,7 +39,13 @@ export default function ComposeEmail() {
 		formTitle,
 		handleSaveDraft,
 		handleSend,
+		handleScheduleSend,
 	} = useComposeForm(mailboxId, folder);
+
+	const { data: contacts = [] } = useContacts(
+		isComposeModalOpen ? mailboxId : undefined,
+	);
+	const contactsListId = useId();
 
 	return (
 		<Dialog.Root
@@ -49,6 +58,13 @@ export default function ComposeEmail() {
 				</Dialog.Title>
 				<form onSubmit={(e) => handleSend(e, closeComposeModal)} className="space-y-4">
 					{error && <Banner variant="error" text={error} />}
+					<datalist id={contactsListId}>
+						{contacts.map((contact) => (
+							<option key={contact.email} value={contact.email}>
+								{contact.name || contact.email}
+							</option>
+						))}
+					</datalist>
 					<div className="flex items-center gap-2">
 						<div className="flex-1">
 							<Input
@@ -58,6 +74,7 @@ export default function ComposeEmail() {
 								size="sm"
 								value={to}
 								onChange={(e) => setTo(e.target.value)}
+								list={contactsListId}
 								required
 							/>
 						</div>
@@ -78,6 +95,7 @@ export default function ComposeEmail() {
 							size="sm"
 							value={cc}
 							onChange={(e) => setCc(e.target.value)}
+							list={contactsListId}
 							placeholder="Separate multiple addresses with commas"
 						/>
 					)}
@@ -88,6 +106,7 @@ export default function ComposeEmail() {
 							size="sm"
 							value={bcc}
 							onChange={(e) => setBcc(e.target.value)}
+							list={contactsListId}
 							placeholder="Separate multiple addresses with commas"
 						/>
 					)}
@@ -128,6 +147,10 @@ export default function ComposeEmail() {
 							>
 								{isSavingDraft ? "Saving..." : "Save as Draft"}
 							</Button>
+							<ScheduleSendMenu
+								disabled={isSavingDraft || isSending}
+								onSchedule={(date) => handleScheduleSend(date, closeComposeModal)}
+							/>
 							<Button
 								type="submit"
 								variant="primary"

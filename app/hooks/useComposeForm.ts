@@ -232,8 +232,8 @@ export function useComposeForm(mailboxId?: string, _folder?: string) {
 		finally { setIsSavingDraft(false); }
 	};
 
-	const handleSend = async (e: FormEvent, onClose: () => void) => {
-		e.preventDefault(); if (isSending) return; setError(null);
+	const submitEmail = async (onClose: () => void, sendAt?: Date) => {
+		if (isSending) return; setError(null);
 		if (!currentMailbox || !mailboxId) { setError("No mailbox selected."); return; }
 		const toRecipients = splitEmailList(to);
 		if (toRecipients.length === 0) { setError("Add at least one recipient."); return; }
@@ -250,17 +250,41 @@ export function useComposeForm(mailboxId?: string, _folder?: string) {
 			text: htmlToPlainText(body),
 		};
 		const draftId = composeOptions.draftEmail?.id; const mode = composeOptions.mode; const originalId = composeOptions.originalEmail?.id || composeOptions.draftEmail?.in_reply_to;
-		setIsSending(true); toastManager.add({ title: "Sending email..." });
+		setIsSending(true);
+		toastManager.add({ title: sendAt ? "Scheduling email..." : "Sending email..." });
 		try {
-			if ((mode === "reply" || mode === "reply-all") && originalId) await replyMutation.mutateAsync({ mailboxId, emailId: originalId, email: emailData });
+			if (sendAt) {
+				// Scheduled sends go through the main send endpoint; the mailbox
+				// DO alarm delivers at send_at. Replies keep threading via the
+				// original's Message-ID.
+				const original = composeOptions.originalEmail;
+				await sendEmailMutation.mutateAsync({ mailboxId, email: {
+					...emailData,
+					send_at: sendAt.toISOString(),
+					...(mode !== "new" && original ? {
+						in_reply_to: original.message_id || original.id,
+						thread_id: original.thread_id || original.id,
+					} : {}),
+				} });
+			}
+			else if ((mode === "reply" || mode === "reply-all") && originalId) await replyMutation.mutateAsync({ mailboxId, emailId: originalId, email: emailData });
 			else if (mode === "forward" && originalId) await forwardMutation.mutateAsync({ mailboxId, emailId: originalId, email: emailData });
 			else await sendEmailMutation.mutateAsync({ mailboxId, email: emailData });
 			if (draftId) deleteEmailMutation.mutate({ mailboxId, id: draftId });
-			toastManager.add({ title: "Email sent!" });
+			toastManager.add({ title: sendAt ? `Scheduled for ${sendAt.toLocaleString()}` : "Email sent!" });
 			onClose();
 		} catch (err: unknown) { const message = (err instanceof Error ? err.message : null) || "Failed to send email."; setError(message); toastManager.add({ title: message, variant: "error" }); }
 		finally { setIsSending(false); }
 	};
 
-	return { to, setTo, cc, setCc, bcc, setBcc, showCcBcc, setShowCcBcc, subject, setSubject, body, setBody, error, setError, isSavingDraft, isSending, formTitle, handleSaveDraft, handleSend, closeCompose, closePanel };
+	const handleSend = async (e: FormEvent, onClose: () => void) => {
+		e.preventDefault();
+		await submitEmail(onClose);
+	};
+
+	const handleScheduleSend = async (sendAt: Date, onClose: () => void) => {
+		await submitEmail(onClose, sendAt);
+	};
+
+	return { to, setTo, cc, setCc, bcc, setBcc, showCcBcc, setShowCcBcc, subject, setSubject, body, setBody, error, setError, isSavingDraft, isSending, formTitle, handleSaveDraft, handleSend, handleScheduleSend, closeCompose, closePanel };
 }

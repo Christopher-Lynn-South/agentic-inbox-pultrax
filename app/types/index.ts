@@ -42,6 +42,8 @@ export interface Email {
 	raw_headers?: string | null;
 	attachments?: Attachment[];
 	snippet?: string | null;
+	/** Snoozed-until (Snoozed folder) or send-at (Scheduled folder) time. */
+	due_at?: string | null;
 	// Thread aggregate fields (only present in threaded list view)
 	thread_count?: number;
 	thread_unread_count?: number;
@@ -64,3 +66,18 @@ export interface Folder {
 	name: string;
 	unreadCount: number;
 }
+
+export interface Contact {
+	email: string;
+	name?: string | null;
+	times_seen: number;
+	last_seen: string;
+}
+
+export type BulkEmailAction =
+	| "read"
+	| "unread"
+	| "star"
+	| "unstar"
+	| "move"
+	| "delete";

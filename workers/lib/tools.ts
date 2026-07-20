@@ -373,6 +373,20 @@ export async function toolDiscardDraft(
 	return { status: "discarded", draftId };
 }
 
+// ── snooze_email ───────────────────────────────────────────────────
+
+export async function toolSnoozeEmail(
+	env: Env,
+	mailboxId: string,
+	emailId: string,
+	until: string,
+) {
+	const stub = getMailboxStub(env, mailboxId);
+	return (stub as unknown as {
+		snoozeEmail: (id: string, until: string) => Promise<Record<string, unknown>>;
+	}).snoozeEmail(emailId, until);
+}
+
 // ── delete_email ───────────────────────────────────────────────────
 
 export async function toolDeleteEmail(

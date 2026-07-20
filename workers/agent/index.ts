@@ -28,6 +28,7 @@ import {
 	toolMarkEmailRead,
 	toolMoveEmail,
 	toolDiscardDraft,
+	toolSnoozeEmail,
 } from "../lib/tools";
 import { Folders, FOLDER_TOOL_DESCRIPTION, MOVE_FOLDER_TOOL_DESCRIPTION } from "../../shared/folders";
 import type { Env } from "../types";
@@ -253,6 +254,22 @@ function createEmailTools(env: Env, mailboxId: string) {
 			}),
 			execute: async ({ emailId, folderId }): Promise<unknown> => {
 				return toolMoveEmail(env, mailboxId, emailId, folderId);
+			},
+		}),
+
+		snooze_email: defineTool({
+			description:
+				"Snooze an email: hide it from the inbox until a specified time, when it returns to the inbox marked unread. Use this when the operator wants to deal with an email later.",
+			parameters: z.object({
+				emailId: z.string().describe("The email ID to snooze"),
+				until: z
+					.string()
+					.describe(
+						"ISO 8601 timestamp for when the email should return to the inbox (e.g. 2026-07-21T09:00:00Z). Must be in the future.",
+					),
+			}),
+			execute: async ({ emailId, until }): Promise<unknown> => {
+				return toolSnoozeEmail(env, mailboxId, emailId, until);
 			},
 		}),
 
